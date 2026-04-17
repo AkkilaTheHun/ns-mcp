@@ -66,18 +66,30 @@ export const config = {
 
 /**
  * Get credentials for a shop. Throws if shop not found.
+ * When multiple shops are configured, requires explicit selection — no silent fallback.
  */
 export function getShopCredentials(shopDomain?: string): ShopCredentials {
-  const domain = shopDomain ?? config.defaultShop;
-  if (!domain) {
-    throw new Error("No shop specified and no default shop configured. Set SHOPS env var.");
+  // Explicit shop requested
+  if (shopDomain) {
+    const token = config.shops.get(shopDomain);
+    if (!token) {
+      const available = [...config.shops.keys()].join(", ");
+      throw new Error(`Shop "${shopDomain}" not found. Available shops: ${available || "none"}`);
+    }
+    return { domain: shopDomain, accessToken: token };
   }
 
-  const token = config.shops.get(domain);
-  if (!token) {
-    const available = [...config.shops.keys()].join(", ");
-    throw new Error(`Shop "${domain}" not found. Available shops: ${available || "none"}`);
+  // No shop specified — only allow implicit default if there's exactly one shop
+  if (config.shops.size === 0) {
+    throw new Error("No shops configured. Set SHOPS env var.");
   }
 
-  return { domain, accessToken: token };
+  if (config.shops.size === 1) {
+    const [domain, token] = [...config.shops.entries()][0]!;
+    return { domain, accessToken: token };
+  }
+
+  // Multiple shops — refuse to guess
+  const available = [...config.shops.keys()].join(", ");
+  throw new Error(`Multiple shops available (${available}). Use shopify_shop(action: "select") to choose one first.`);
 }
