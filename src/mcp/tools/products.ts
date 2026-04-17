@@ -477,12 +477,15 @@ export function registerProductTools(server: McpServer): void {
   // --- Delete Metafields ---
   server.tool(
     "delete_metafields",
-    "Delete one or more metafields by their IDs.",
+    "Delete one or more metafields by owner ID + namespace + key.",
     {
-      ids: z.array(z.string()).describe("Metafield GIDs to delete"),
+      metafields: z.array(z.object({
+        ownerId: z.string().describe("Owner GID (e.g. gid://shopify/Product/123)"),
+        namespace: z.string().describe("Metafield namespace"),
+        key: z.string().describe("Metafield key"),
+      })).describe("Metafields to delete"),
     },
-    async ({ ids }) => {
-      const metafields = ids.map((id) => ({ ownerId: "", key: "", namespace: "", id }));
+    async ({ metafields }) => {
       const res = await shopifyGraphQL<{
         metafieldsDelete: {
           deletedMetafields: Array<{ ownerId: string; key: string; namespace: string }>;
@@ -495,10 +498,10 @@ export function registerProductTools(server: McpServer): void {
             userErrors { field message }
           }
         }
-      `, { metafields: ids.map((id) => ({ id })) });
+      `, { metafields });
 
       throwIfUserErrors(res.data?.metafieldsDelete?.userErrors, "metafieldsDelete");
-      return { content: [{ type: "text" as const, text: `Deleted ${ids.length} metafield(s).` }] };
+      return { content: [{ type: "text" as const, text: `Deleted ${metafields.length} metafield(s).` }] };
     },
   );
 
