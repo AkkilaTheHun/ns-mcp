@@ -17,6 +17,7 @@ import {
   registerDraftOrderGateway,
   registerMetaobjectGateway,
 } from "./gateway2.js";
+import { registerPrompts } from "./prompts.js";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -39,6 +40,9 @@ export function createMcpServer(): McpServer {
   registerFileGateway(server);         // list, get, create, update, delete
   registerDraftOrderGateway(server);   // list, get, create, update, complete, delete
   registerMetaobjectGateway(server);   // definitions + entries CRUD
+
+  // Prompts (pre-built workflows)
+  registerPrompts(server);
 
   return server;
 }
