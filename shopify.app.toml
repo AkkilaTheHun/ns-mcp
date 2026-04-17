@@ -2,6 +2,7 @@
 
 client_id = "71f2b24d01a31d8c5586743258b84774"
 name = "nailstuff-mcp"
+application_url = "https://ns-mcp-325z.onrender.com"
 embedded = false
 
 [build]
