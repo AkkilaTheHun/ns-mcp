@@ -6,6 +6,7 @@ import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthT
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // --- Health check ---
 app.get("/health", (_req, res) => {
