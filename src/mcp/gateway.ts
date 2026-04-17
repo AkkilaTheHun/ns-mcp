@@ -67,14 +67,13 @@ export function registerShopGateway(server: McpServer): void {
 export function registerGraphQLGateway(server: McpServer): void {
   server.tool(
     "shopify_graphql",
-    `Execute any Shopify Admin GraphQL query or mutation directly. Use this for operations not covered by the other tools, or when you need full control over the query shape. The API version is ${config.shopifyApiVersion}.`,
+    `Execute any Shopify Admin GraphQL query or mutation directly. Use this for operations not covered by the other tools, or when you need full control over the query shape. The API version is ${config.shopifyApiVersion}. Uses the currently selected shop.`,
     {
       query: z.string().describe("GraphQL query or mutation string"),
       variables: z.record(z.string(), z.unknown()).optional().describe("GraphQL variables"),
-      shop: z.string().optional().describe("Shop domain override"),
     },
-    async ({ query, variables, shop }) => {
-      const res = await gql(query, variables, shop);
+    async ({ query, variables }) => {
+      const res = await gql(query, variables);
       return text(res.data);
     },
   );
