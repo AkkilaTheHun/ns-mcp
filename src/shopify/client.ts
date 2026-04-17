@@ -49,7 +49,7 @@ export async function shopifyGraphQL<T = unknown>(
   // Throw on top-level GraphQL errors (schema errors, auth errors, etc.)
   if (json.errors && json.errors.length > 0) {
     const messages = json.errors.map((e) => e.message);
-    console.error(`[shopify] ${shop.domain} GraphQL errors:`, messages);
+    console.error(`[shopify] ${shop.domain} GraphQL errors: ${messages.join(" | ")}`);
     throw new Error(`Shopify GraphQL error (${shop.domain}):\n${messages.join("\n")}`);
   }
 

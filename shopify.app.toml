@@ -12,7 +12,7 @@ automatically_update_urls_on_dev = true
 api_version = "2026-07"
 
 [access_scopes]
-scopes = "read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_content,write_content,read_themes,write_themes,read_inventory,write_inventory,read_discounts,write_discounts,read_metaobjects,write_metaobjects,read_publications,write_publications,read_files,write_files,read_online_store_navigation,write_online_store_navigation,read_draft_orders,write_draft_orders,read_locations"
+scopes = "read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_content,write_content,read_themes,write_themes,read_inventory,write_inventory,read_discounts,write_discounts,read_metaobjects,write_metaobjects,read_publications,write_publications,read_files,write_files,read_online_store_navigation,write_online_store_navigation,read_draft_orders,write_draft_orders,read_locations,read_locales,write_locales,read_translations,write_translations,read_markets"
 
 [auth]
 redirect_urls = [ "https://mcp.nailstuff.co/auth/callback" ]
