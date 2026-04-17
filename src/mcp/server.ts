@@ -3,6 +3,7 @@ import { registerProductTools } from "./tools/products.js";
 import { registerCollectionTools } from "./tools/collections.js";
 import { registerRedirectTools } from "./tools/redirects.js";
 import { registerMenuTools } from "./tools/menus.js";
+import { registerCustomerTools } from "./tools/customers.js";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -15,6 +16,7 @@ export function createMcpServer(): McpServer {
   registerCollectionTools(server);
   registerRedirectTools(server);
   registerMenuTools(server);
+  registerCustomerTools(server);
 
   return server;
 }
