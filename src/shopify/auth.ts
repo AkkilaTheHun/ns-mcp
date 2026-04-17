@@ -88,17 +88,54 @@ export async function handleAuthCallback(req: Request, res: Response): Promise<v
   }
 }
 
+// In-memory store for authorization codes (short-lived)
+const authCodes = new Map<string, { clientId: string; redirectUri: string; expiresAt: number }>();
+
 /**
- * OAuth 2.0 token endpoint for MCP clients (ChatGPT, etc.).
- * Supports client_credentials grant type.
+ * OAuth 2.0 Authorization endpoint.
+ * ChatGPT redirects users here, we show a simple consent page,
+ * then redirect back with an authorization code.
+ */
+export function handleOAuthAuthorize(req: Request, res: Response): void {
+  const {
+    client_id,
+    redirect_uri,
+    response_type,
+    state,
+  } = req.query as Record<string, string>;
+
+  if (response_type !== "code") {
+    res.status(400).json({ error: "unsupported_response_type" });
+    return;
+  }
+
+  if (client_id !== config.oauthClientId) {
+    res.status(401).json({ error: "invalid_client" });
+    return;
+  }
+
+  // Auto-approve: generate code and redirect back immediately.
+  // For a production app you'd show a consent screen here.
+  const code = crypto.randomUUID();
+  authCodes.set(code, {
+    clientId: client_id,
+    redirectUri: redirect_uri,
+    expiresAt: Date.now() + 60_000, // 1 minute expiry
+  });
+
+  const redirectUrl = new URL(redirect_uri);
+  redirectUrl.searchParams.set("code", code);
+  if (state) redirectUrl.searchParams.set("state", state);
+
+  res.redirect(redirectUrl.toString());
+}
+
+/**
+ * OAuth 2.0 Token endpoint.
+ * Supports both authorization_code and client_credentials grant types.
  */
 export async function handleOAuthToken(req: Request, res: Response): Promise<void> {
   const grantType = req.body.grant_type;
-
-  if (grantType !== "client_credentials") {
-    res.status(400).json({ error: "unsupported_grant_type" });
-    return;
-  }
 
   // Accept credentials from body or Basic auth header
   let clientId = req.body.client_id as string | undefined;
@@ -121,9 +158,38 @@ export async function handleOAuthToken(req: Request, res: Response): Promise<voi
     return;
   }
 
-  res.json({
-    access_token: config.mcpAuthToken,
-    token_type: "bearer",
-    expires_in: 86400,
-  });
+  if (grantType === "authorization_code") {
+    const code = req.body.code as string | undefined;
+    if (!code) {
+      res.status(400).json({ error: "invalid_request", error_description: "Missing code" });
+      return;
+    }
+
+    const stored = authCodes.get(code);
+    if (!stored || stored.clientId !== clientId || stored.expiresAt < Date.now()) {
+      authCodes.delete(code ?? "");
+      res.status(400).json({ error: "invalid_grant" });
+      return;
+    }
+
+    authCodes.delete(code);
+
+    res.json({
+      access_token: config.mcpAuthToken,
+      token_type: "bearer",
+      expires_in: 86400,
+    });
+    return;
+  }
+
+  if (grantType === "client_credentials") {
+    res.json({
+      access_token: config.mcpAuthToken,
+      token_type: "bearer",
+      expires_in: 86400,
+    });
+    return;
+  }
+
+  res.status(400).json({ error: "unsupported_grant_type" });
 }

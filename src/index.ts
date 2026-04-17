@@ -2,7 +2,7 @@ import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./mcp/server.js";
 import { config } from "./config.js";
-import { handleAuthBegin, handleAuthCallback, handleOAuthToken } from "./shopify/auth.js";
+import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthToken } from "./shopify/auth.js";
 
 const app = express();
 app.use(express.json());
@@ -16,7 +16,8 @@ app.get("/health", (_req, res) => {
 app.get("/auth", handleAuthBegin);
 app.get("/auth/callback", handleAuthCallback);
 
-// --- OAuth 2.0 token endpoint (for ChatGPT and other MCP clients) ---
+// --- OAuth 2.0 endpoints (for ChatGPT and other MCP clients) ---
+app.get("/oauth/authorize", handleOAuthAuthorize);
 app.post("/oauth/token", handleOAuthToken);
 
 // --- MCP endpoint ---
