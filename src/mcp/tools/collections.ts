@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { shopifyGraphQL, throwIfUserErrors } from "../../shopify/client.js";
+import { shopifyGraphQL, throwIfUserErrors, toText } from "../../shopify/client.js";
 
 // --- GraphQL Fragments ---
 
@@ -99,7 +99,7 @@ export function registerCollectionTools(server: McpServer): void {
         }
       `, { first, after, query, sortKey, reverse });
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -128,7 +128,7 @@ export function registerCollectionTools(server: McpServer): void {
       }
 
       const res = await shopifyGraphQL(query, variables);
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -172,7 +172,7 @@ export function registerCollectionTools(server: McpServer): void {
       `, { input });
 
       throwIfUserErrors(res.data?.collectionCreate?.userErrors, "collectionCreate");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.collectionCreate?.collection, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.collectionCreate?.collection) }] };
     },
   );
 
@@ -232,7 +232,7 @@ export function registerCollectionTools(server: McpServer): void {
       `, { input });
 
       throwIfUserErrors(res.data?.collectionCreate?.userErrors, "collectionCreate");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.collectionCreate?.collection, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.collectionCreate?.collection) }] };
     },
   );
 
@@ -293,7 +293,7 @@ export function registerCollectionTools(server: McpServer): void {
       `, { input });
 
       throwIfUserErrors(res.data?.collectionUpdate?.userErrors, "collectionUpdate");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.collectionUpdate?.collection, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.collectionUpdate?.collection) }] };
     },
   );
 
@@ -345,7 +345,7 @@ export function registerCollectionTools(server: McpServer): void {
       `, { id: collectionId, productIds });
 
       throwIfUserErrors(res.data?.collectionAddProducts?.userErrors, "collectionAddProducts");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.collectionAddProducts?.collection, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.collectionAddProducts?.collection) }] };
     },
   );
 
@@ -420,7 +420,7 @@ export function registerCollectionTools(server: McpServer): void {
         }
       `, { id: collectionId, first, after });
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -467,7 +467,7 @@ export function registerCollectionTools(server: McpServer): void {
         }
       `, { query });
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -508,7 +508,7 @@ export function registerCollectionTools(server: McpServer): void {
       `, { metafields: metafieldsInput });
 
       throwIfUserErrors(res.data?.metafieldsSet?.userErrors, "metafieldsSet");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.metafieldsSet?.metafields, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.metafieldsSet?.metafields) }] };
     },
   );
 }

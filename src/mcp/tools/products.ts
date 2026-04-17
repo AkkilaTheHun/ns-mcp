@@ -144,7 +144,7 @@ export function registerProductTools(server: McpServer): void {
         }
       `, { first, after, query, sortKey, reverse });
 
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -173,7 +173,7 @@ export function registerProductTools(server: McpServer): void {
       }
 
       const res = await shopifyGraphQL(query, variables);
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -221,7 +221,7 @@ export function registerProductTools(server: McpServer): void {
       `, { product: input });
 
       throwIfUserErrors(res.data?.productCreate?.userErrors, "productCreate");
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.productCreate?.product) }] };
     },
   );
 
@@ -265,7 +265,7 @@ export function registerProductTools(server: McpServer): void {
       `, { product: input });
 
       throwIfUserErrors(res.data?.productUpdate?.userErrors, "productUpdate");
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.productUpdate?.product) }] };
     },
   );
 
@@ -303,10 +303,14 @@ export function registerProductTools(server: McpServer): void {
       variants: z.array(z.object({
         price: z.string().optional().describe("Variant price"),
         compareAtPrice: z.string().optional().describe("Compare at price"),
-        sku: z.string().optional().describe("SKU"),
         barcode: z.string().optional().describe("Barcode"),
         taxable: z.boolean().optional(),
+        taxCode: z.string().optional().describe("Tax code"),
         inventoryPolicy: z.enum(["DENY", "CONTINUE"]).optional().describe("DENY = stop selling when out of stock, CONTINUE = allow overselling"),
+        inventoryItem: z.object({
+          sku: z.string().optional().describe("SKU"),
+          tracked: z.boolean().optional().describe("Whether inventory is tracked"),
+        }).optional().describe("Inventory item settings (includes SKU)"),
         optionValues: z.array(z.object({
           optionName: z.string().describe("Option name (e.g. 'Color')"),
           name: z.string().describe("Option value (e.g. 'Red')"),
@@ -343,7 +347,7 @@ export function registerProductTools(server: McpServer): void {
       `, { productId, variants, strategy });
 
       throwIfUserErrors(res.data?.productVariantsBulkCreate?.userErrors, "productVariantsBulkCreate");
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.productVariantsBulkCreate?.productVariants) }] };
     },
   );
 
@@ -357,10 +361,14 @@ export function registerProductTools(server: McpServer): void {
         id: z.string().describe("Variant GID"),
         price: z.string().optional(),
         compareAtPrice: z.string().optional(),
-        sku: z.string().optional(),
         barcode: z.string().optional(),
         taxable: z.boolean().optional(),
+        taxCode: z.string().optional(),
         inventoryPolicy: z.enum(["DENY", "CONTINUE"]).optional(),
+        inventoryItem: z.object({
+          sku: z.string().optional(),
+          tracked: z.boolean().optional(),
+        }).optional().describe("Inventory item settings (includes SKU)"),
         metafields: z.array(z.object({
           namespace: z.string(),
           key: z.string(),
@@ -393,7 +401,7 @@ export function registerProductTools(server: McpServer): void {
       `, { productId, variants });
 
       throwIfUserErrors(res.data?.productVariantsBulkUpdate?.userErrors, "productVariantsBulkUpdate");
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.productVariantsBulkUpdate?.productVariants) }] };
     },
   );
 
@@ -462,7 +470,7 @@ export function registerProductTools(server: McpServer): void {
       `, { metafields: metafieldsInput });
 
       throwIfUserErrors(res.data?.metafieldsSet?.userErrors, "metafieldsSet");
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.metafieldsSet?.metafields) }] };
     },
   );
 
@@ -513,7 +521,7 @@ export function registerProductTools(server: McpServer): void {
         }
       `, { query, first });
 
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -533,7 +541,7 @@ export function registerProductTools(server: McpServer): void {
         }
       `, { query });
 
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data) }] };
     },
   );
 
@@ -579,7 +587,7 @@ export function registerProductTools(server: McpServer): void {
       `, { synchronous: true, input: { id: productId, media } });
 
       throwIfUserErrors(res.data?.productSet?.userErrors, "productSet");
-      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data?.productSet?.product) }] };
     },
   );
 }
