@@ -11,6 +11,7 @@ import { registerDiscountTools } from "./tools/discounts.js";
 import { registerPageTools } from "./tools/pages.js";
 import { registerFileTools } from "./tools/files.js";
 import { registerDraftOrderTools } from "./tools/draft-orders.js";
+import { registerShopTools } from "./tools/shop.js";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -19,6 +20,7 @@ export function createMcpServer(): McpServer {
   });
 
   // Register all tool groups
+  registerShopTools(server);
   registerProductTools(server);
   registerCollectionTools(server);
   registerRedirectTools(server);

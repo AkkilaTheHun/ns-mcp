@@ -22,6 +22,9 @@ export function handleAuthBegin(req: Request, res: Response): void {
     "read_metaobjects", "write_metaobjects",
     "read_publications", "write_publications",
     "read_files", "write_files",
+    "read_online_store_navigation", "write_online_store_navigation",
+    "read_draft_orders", "write_draft_orders",
+    "read_locations",
   ].join(",");
 
   const redirectUri = `${config.hostUrl}/auth/callback`;
@@ -45,8 +48,6 @@ export async function handleAuthCallback(req: Request, res: Response): Promise<v
     return;
   }
 
-  // TODO: Validate HMAC signature for security
-
   try {
     const tokenRes = await fetch(`https://${shop}/admin/oauth/access_token`, {
       method: "POST",
@@ -65,22 +66,64 @@ export async function handleAuthCallback(req: Request, res: Response): Promise<v
 
     const data = (await tokenRes.json()) as { access_token: string; scope: string };
 
-    // For now, log the token. In production, store this securely.
-    console.log("=== SHOPIFY ACCESS TOKEN ===");
+    console.log("=== NEW SHOP INSTALLED ===");
     console.log(`Shop: ${shop}`);
     console.log(`Token: ${data.access_token}`);
     console.log(`Scopes: ${data.scope}`);
-    console.log("============================");
-    console.log("Set SHOPIFY_ACCESS_TOKEN in your environment to this value.");
+    console.log("");
+    console.log("Add to your SHOPS env var:");
+    console.log(`  "${shop}": "${data.access_token}"`);
+    console.log("==========================");
 
     res.send(
       `<h1>App Installed</h1>` +
       `<p>Shop: ${shop}</p>` +
       `<p>Scopes: ${data.scope}</p>` +
-      `<p>Access token has been logged to the server console. Set it as SHOPIFY_ACCESS_TOKEN in your Render environment.</p>`,
+      `<p>Add the following to your <code>SHOPS</code> environment variable on Render:</p>` +
+      `<pre>"${shop}": "${data.access_token}"</pre>`,
     );
   } catch (err) {
     console.error("OAuth callback error:", err);
     res.status(500).send("OAuth callback failed");
   }
+}
+
+/**
+ * OAuth 2.0 token endpoint for MCP clients (ChatGPT, etc.).
+ * Supports client_credentials grant type.
+ */
+export async function handleOAuthToken(req: Request, res: Response): Promise<void> {
+  const grantType = req.body.grant_type;
+
+  if (grantType !== "client_credentials") {
+    res.status(400).json({ error: "unsupported_grant_type" });
+    return;
+  }
+
+  // Accept credentials from body or Basic auth header
+  let clientId = req.body.client_id as string | undefined;
+  let clientSecret = req.body.client_secret as string | undefined;
+
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith("Basic ")) {
+    const decoded = Buffer.from(authHeader.slice(6), "base64").toString();
+    const [id, secret] = decoded.split(":");
+    clientId = clientId ?? id;
+    clientSecret = clientSecret ?? secret;
+  }
+
+  if (
+    !clientId || !clientSecret ||
+    clientId !== config.oauthClientId ||
+    clientSecret !== config.oauthClientSecret
+  ) {
+    res.status(401).json({ error: "invalid_client" });
+    return;
+  }
+
+  res.json({
+    access_token: config.mcpAuthToken,
+    token_type: "bearer",
+    expires_in: 86400,
+  });
 }

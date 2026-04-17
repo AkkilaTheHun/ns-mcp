@@ -2,7 +2,7 @@ import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./mcp/server.js";
 import { config } from "./config.js";
-import { handleAuthBegin, handleAuthCallback } from "./shopify/auth.js";
+import { handleAuthBegin, handleAuthCallback, handleOAuthToken } from "./shopify/auth.js";
 
 const app = express();
 app.use(express.json());
@@ -15,6 +15,9 @@ app.get("/health", (_req, res) => {
 // --- Shopify OAuth routes ---
 app.get("/auth", handleAuthBegin);
 app.get("/auth/callback", handleAuthCallback);
+
+// --- OAuth 2.0 token endpoint (for ChatGPT and other MCP clients) ---
+app.post("/oauth/token", handleOAuthToken);
 
 // --- MCP endpoint ---
 // Auth middleware for MCP clients
@@ -105,8 +108,10 @@ app.delete("/mcp", mcpAuth, async (req, res) => {
 app.listen(config.port, () => {
   console.log(`Nailstuff MCP server running on port ${config.port}`);
   console.log(`MCP endpoint: ${config.hostUrl}/mcp`);
+  console.log(`OAuth token: ${config.hostUrl}/oauth/token`);
   console.log(`Health check: ${config.hostUrl}/health`);
-  if (!config.shopifyAccessToken) {
-    console.log(`\nNo Shopify access token set. Install the app: ${config.hostUrl}/auth?shop=YOUR-STORE.myshopify.com`);
+  console.log(`Connected shops: ${[...config.shops.keys()].join(", ") || "none"}`);
+  if (config.shops.size === 0) {
+    console.log(`\nNo shops configured. Install the app: ${config.hostUrl}/auth?shop=YOUR-STORE.myshopify.com`);
   }
 });

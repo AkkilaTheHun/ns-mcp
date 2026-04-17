@@ -1,4 +1,4 @@
-import { config } from "../config.js";
+import { config, getShopCredentials } from "../config.js";
 
 interface GraphQLResponse<T = unknown> {
   data?: T;
@@ -8,25 +8,28 @@ interface GraphQLResponse<T = unknown> {
 
 /**
  * Lightweight Shopify Admin GraphQL client.
- * Uses the REST-based GraphQL endpoint with the offline access token.
+ * Supports multi-shop: pass a shopDomain to target a specific store,
+ * or omit to use the default shop.
  */
 export async function shopifyGraphQL<T = unknown>(
   query: string,
   variables?: Record<string, unknown>,
+  shopDomain?: string,
 ): Promise<GraphQLResponse<T>> {
-  const url = `https://${config.shopDomain}/admin/api/${config.shopifyApiVersion}/graphql.json`;
+  const shop = getShopCredentials(shopDomain);
+  const url = `https://${shop.domain}/admin/api/${config.shopifyApiVersion}/graphql.json`;
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Shopify-Access-Token": config.shopifyAccessToken,
+      "X-Shopify-Access-Token": shop.accessToken,
     },
     body: JSON.stringify({ query, variables }),
   });
 
   if (!res.ok) {
-    throw new Error(`Shopify API error: ${res.status} ${res.statusText}`);
+    throw new Error(`Shopify API error (${shop.domain}): ${res.status} ${res.statusText}`);
   }
 
   const json = (await res.json()) as GraphQLResponse<T>;
@@ -34,7 +37,7 @@ export async function shopifyGraphQL<T = unknown>(
   // Throw on top-level GraphQL errors (schema errors, auth errors, etc.)
   if (json.errors && json.errors.length > 0) {
     const messages = json.errors.map((e) => e.message);
-    throw new Error(`Shopify GraphQL error:\n${messages.join("\n")}`);
+    throw new Error(`Shopify GraphQL error (${shop.domain}):\n${messages.join("\n")}`);
   }
 
   return json;
