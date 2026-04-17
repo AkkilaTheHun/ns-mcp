@@ -106,6 +106,16 @@ app.post("/mcp", mcpAuth, async (req, res) => {
       return;
     }
 
+    // Stale session — client is using a session ID we don't recognize (e.g. after a deploy)
+    if (sessionId && !transports.has(sessionId)) {
+      res.status(404).json({
+        jsonrpc: "2.0",
+        error: { code: -32000, message: "Session not found. Please reconnect." },
+        id: null,
+      });
+      return;
+    }
+
     // New session — create server + transport
     const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({
