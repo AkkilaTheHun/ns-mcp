@@ -39,6 +39,8 @@ export async function shopifyGraphQL<T = unknown>(
   });
 
   if (!res.ok) {
+    const body = await res.text();
+    console.error(`[shopify] ${shop.domain} HTTP ${res.status}: ${body.slice(0, 500)}`);
     throw new Error(`Shopify API error (${shop.domain}): ${res.status} ${res.statusText}`);
   }
 
@@ -47,6 +49,7 @@ export async function shopifyGraphQL<T = unknown>(
   // Throw on top-level GraphQL errors (schema errors, auth errors, etc.)
   if (json.errors && json.errors.length > 0) {
     const messages = json.errors.map((e) => e.message);
+    console.error(`[shopify] ${shop.domain} GraphQL errors:`, messages);
     throw new Error(`Shopify GraphQL error (${shop.domain}):\n${messages.join("\n")}`);
   }
 
@@ -64,6 +67,7 @@ export function throwIfUserErrors(
     const messages = userErrors.map(
       (e) => `${e.field?.join(".") ?? "unknown"}: ${e.message}`,
     );
+    console.error(`[shopify] ${operation} userErrors:`, messages);
     throw new Error(`${operation} failed:\n${messages.join("\n")}`);
   }
 }
