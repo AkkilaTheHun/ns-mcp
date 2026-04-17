@@ -4,6 +4,13 @@ import { registerCollectionTools } from "./tools/collections.js";
 import { registerRedirectTools } from "./tools/redirects.js";
 import { registerMenuTools } from "./tools/menus.js";
 import { registerCustomerTools } from "./tools/customers.js";
+import { registerOrderTools } from "./tools/orders.js";
+import { registerInventoryTools } from "./tools/inventory.js";
+import { registerMetaobjectTools } from "./tools/metaobjects.js";
+import { registerDiscountTools } from "./tools/discounts.js";
+import { registerPageTools } from "./tools/pages.js";
+import { registerFileTools } from "./tools/files.js";
+import { registerDraftOrderTools } from "./tools/draft-orders.js";
 
 export function createMcpServer(): McpServer {
   const server = new McpServer({
@@ -17,6 +24,13 @@ export function createMcpServer(): McpServer {
   registerRedirectTools(server);
   registerMenuTools(server);
   registerCustomerTools(server);
+  registerOrderTools(server);
+  registerInventoryTools(server);
+  registerMetaobjectTools(server);
+  registerDiscountTools(server);
+  registerPageTools(server);
+  registerFileTools(server);
+  registerDraftOrderTools(server);
 
   return server;
 }
