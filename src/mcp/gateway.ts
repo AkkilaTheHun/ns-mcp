@@ -61,6 +61,97 @@ export function registerShopGateway(server: McpServer): void {
 }
 
 // ============================================================
+// RAW GRAPHQL
+// ============================================================
+
+export function registerGraphQLGateway(server: McpServer): void {
+  server.tool(
+    "shopify_graphql",
+    `Execute any Shopify Admin GraphQL query or mutation directly. Use this for operations not covered by the other tools, or when you need full control over the query shape. The API version is ${config.shopifyApiVersion}.`,
+    {
+      query: z.string().describe("GraphQL query or mutation string"),
+      variables: z.record(z.string(), z.unknown()).optional().describe("GraphQL variables"),
+      shop: z.string().optional().describe("Shop domain override"),
+    },
+    async ({ query, variables, shop }) => {
+      const res = await gql(query, variables, shop);
+      return text(res.data);
+    },
+  );
+}
+
+// ============================================================
+// TRANSLATIONS
+// ============================================================
+
+export function registerTranslationGateway(server: McpServer): void {
+  server.tool(
+    "shopify_translations",
+    `Manage translations for products, collections, pages, and other translatable resources. Actions:
+- list_locales: List shop's enabled locales
+- list_translatable: List translatable resources of a type (params: resourceType, first?, after?)
+- get: Get translations for a resource (params: resourceId, locale)
+- register: Register translations (params: resourceId, translations[{locale, key, value, translatableContentDigest}])
+- remove: Remove translations (params: resourceId, locales[], keys[])
+
+resourceType examples: PRODUCT, COLLECTION, ONLINE_STORE_PAGE, ONLINE_STORE_ARTICLE, METAOBJECT, MENU, LINK`,
+    {
+      action: z.enum(["list_locales", "list_translatable", "get", "register", "remove"]),
+      resourceType: z.string().optional().describe("e.g. PRODUCT, COLLECTION, ONLINE_STORE_PAGE"),
+      resourceId: z.string().optional().describe("Resource GID to translate"),
+      locale: z.string().optional().describe("Locale code (e.g. fr, es, de)"),
+      locales: z.array(z.string()).optional(),
+      keys: z.array(z.string()).optional(),
+      translations: z.array(z.object({
+        locale: z.string(),
+        key: z.string(),
+        value: z.string(),
+        translatableContentDigest: z.string(),
+      })).optional(),
+      first: z.number().optional(),
+      after: z.string().optional(),
+    },
+    async ({ action, ...p }) => {
+      switch (action) {
+        case "list_locales": {
+          const res = await gql(`query { shopLocales { locale name primary published } }`);
+          return text(res.data);
+        }
+        case "list_translatable": {
+          if (!p.resourceType) return fail("resourceType required");
+          const res = await gql(`query($resourceType:TranslatableResourceType!,$first:Int!,$after:String){translatableResources(resourceType:$resourceType,first:$first,after:$after){edges{cursor node{resourceId translatableContent{key value digest locale}}}pageInfo{hasNextPage endCursor}}}`,
+            { resourceType: p.resourceType, first: p.first ?? 25, after: p.after });
+          return text(res.data);
+        }
+        case "get": {
+          if (!p.resourceId || !p.locale) return fail("resourceId and locale required");
+          const res = await gql(`query($resourceId:ID!,$locale:String!){translatableResource(resourceId:$resourceId){resourceId translatableContent{key value digest locale} translations(locale:$locale){key value locale outdated}}}`,
+            { resourceId: p.resourceId, locale: p.locale });
+          return text(res.data);
+        }
+        case "register": {
+          if (!p.resourceId || !p.translations) return fail("resourceId and translations required");
+          const res = await gql<{ translationsRegister: { translations: unknown[]; userErrors: Array<{ field: string[]; message: string }> } }>(
+            `mutation($resourceId:ID!,$translations:[TranslationInput!]!){translationsRegister(resourceId:$resourceId,translations:$translations){translations{key value locale}userErrors{field message}}}`,
+            { resourceId: p.resourceId, translations: p.translations });
+          checkErrors(res.data?.translationsRegister?.userErrors, "translationsRegister");
+          return text(res.data?.translationsRegister?.translations);
+        }
+        case "remove": {
+          if (!p.resourceId || !p.locales || !p.keys) return fail("resourceId, locales, and keys required");
+          const res = await gql<{ translationsRemove: { translations: unknown[]; userErrors: Array<{ field: string[]; message: string }> } }>(
+            `mutation($resourceId:ID!,$translationKeys:[String!]!,$locales:[String!]!){translationsRemove(resourceId:$resourceId,translationKeys:$translationKeys,locales:$locales){translations{key locale}userErrors{field message}}}`,
+            { resourceId: p.resourceId, translationKeys: p.keys, locales: p.locales });
+          checkErrors(res.data?.translationsRemove?.userErrors, "translationsRemove");
+          return text(res.data?.translationsRemove?.translations);
+        }
+        default: return fail(`Unknown action: ${action}`);
+      }
+    },
+  );
+}
+
+// ============================================================
 // PRODUCTS
 // ============================================================
 

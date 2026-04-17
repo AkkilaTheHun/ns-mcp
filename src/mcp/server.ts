@@ -1,6 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   registerShopGateway,
+  registerGraphQLGateway,
+  registerTranslationGateway,
   registerProductGateway,
   registerVariantGateway,
   registerCollectionGateway,
@@ -25,8 +27,10 @@ export function createMcpServer(): McpServer {
     version: "1.0.0",
   });
 
-  // 15 gateway tools covering all 114 operations
+  // Gateway tools
   registerShopGateway(server);         // list, select, info
+  registerGraphQLGateway(server);      // raw GraphQL for full API access
+  registerTranslationGateway(server);  // translations for any resource
   registerProductGateway(server);      // list, get, search, count, create, update, delete, add_media
   registerVariantGateway(server);      // create, update, delete
   registerCollectionGateway(server);   // list, get, count, create, create_smart, update, delete, add/remove/list/reorder products

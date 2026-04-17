@@ -90,6 +90,9 @@ function mcpAuth(
 const transports = new Map<string, StreamableHTTPServerTransport>();
 
 app.post("/mcp", mcpAuth, async (req, res) => {
+  // Log request details for debugging
+  console.log(`MCP POST - Accept: ${req.headers.accept}, Content-Type: ${req.headers["content-type"]}, Session: ${req.headers["mcp-session-id"] ?? "none"}, Body type: ${typeof req.body}`);
+
   try {
     // Check for existing session
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
