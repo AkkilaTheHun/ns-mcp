@@ -2,6 +2,12 @@ import type { Request, Response } from "express";
 import { config } from "../config.js";
 
 /**
+ * Shared store for dynamically registered OAuth clients (RFC 7591).
+ * Populated by the /oauth/register endpoint in index.ts.
+ */
+export const registeredOAuthClients = new Map<string, { clientSecret: string; clientName: string }>();
+
+/**
  * OAuth install redirect — sends the merchant to Shopify's authorization page.
  */
 export function handleAuthBegin(req: Request, res: Response): void {
@@ -200,8 +206,11 @@ export async function handleOAuthToken(req: Request, res: Response): Promise<voi
         return;
       }
     } else {
-      // Confidential client — verify client_secret
-      if (!clientSecret || clientId !== config.oauthClientId || clientSecret !== config.oauthClientSecret) {
+      // Confidential client — verify client_secret (static or dynamically registered)
+      const isStaticClient = clientId === config.oauthClientId && clientSecret === config.oauthClientSecret;
+      const dynClient = registeredOAuthClients.get(clientId ?? "");
+      const isDynClient = dynClient && dynClient.clientSecret === clientSecret;
+      if (!isStaticClient && !isDynClient) {
         res.status(401).json({ error: "invalid_client" });
         return;
       }
@@ -218,7 +227,10 @@ export async function handleOAuthToken(req: Request, res: Response): Promise<voi
   }
 
   if (grantType === "client_credentials") {
-    if (!clientId || !clientSecret || clientId !== config.oauthClientId || clientSecret !== config.oauthClientSecret) {
+    const isStaticClient = clientId === config.oauthClientId && clientSecret === config.oauthClientSecret;
+    const dynClient2 = registeredOAuthClients.get(clientId ?? "");
+    const isDynClient2 = dynClient2 && dynClient2.clientSecret === clientSecret;
+    if (!isStaticClient && !isDynClient2) {
       res.status(401).json({ error: "invalid_client" });
       return;
     }

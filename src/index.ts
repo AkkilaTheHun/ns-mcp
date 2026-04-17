@@ -4,7 +4,7 @@ import { createMcpServer } from "./mcp/server.js";
 import { config } from "./config.js";
 import { requestContext } from "./context.js";
 import { clearSession } from "./session.js";
-import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthToken } from "./shopify/auth.js";
+import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthToken, registeredOAuthClients } from "./shopify/auth.js";
 
 const app = express();
 app.use(express.json());
@@ -23,15 +23,36 @@ app.get("/auth/callback", handleAuthCallback);
 app.get("/oauth/authorize", handleOAuthAuthorize);
 app.post("/oauth/token", handleOAuthToken);
 
+// OAuth 2.0 Dynamic Client Registration (RFC 7591)
+app.post("/oauth/register", (req, res) => {
+  const clientId = crypto.randomUUID();
+  const clientSecret = crypto.randomUUID();
+  const { client_name, redirect_uris, grant_types, token_endpoint_auth_method, scope } = req.body;
+
+  // Store the registered client (in-memory for now)
+  registeredOAuthClients.set(clientId, { clientSecret, clientName: client_name });
+
+  res.status(201).json({
+    client_id: clientId,
+    client_secret: clientSecret,
+    client_name: client_name ?? "MCP Client",
+    redirect_uris: redirect_uris ?? [],
+    grant_types: grant_types ?? ["authorization_code"],
+    token_endpoint_auth_method: token_endpoint_auth_method ?? "client_secret_post",
+    scope: scope ?? "",
+  });
+});
+
 // OAuth 2.0 discovery metadata
 app.get("/.well-known/oauth-authorization-server", (_req, res) => {
   res.json({
     issuer: config.hostUrl,
     authorization_endpoint: `${config.hostUrl}/oauth/authorize`,
     token_endpoint: `${config.hostUrl}/oauth/token`,
+    registration_endpoint: `${config.hostUrl}/oauth/register`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "client_credentials"],
-    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic", "none"],
     code_challenge_methods_supported: ["S256"],
   });
 });
@@ -62,6 +83,8 @@ function mcpAuth(
   }
   next();
 }
+
+// Use shared registered clients map from auth module
 
 // Map to track active transports by session ID
 const transports = new Map<string, StreamableHTTPServerTransport>();
