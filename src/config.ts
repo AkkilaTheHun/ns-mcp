@@ -89,7 +89,13 @@ export function getShopCredentials(shopDomain?: string): ShopCredentials {
     return { domain, accessToken: token };
   }
 
-  // Multiple shops — refuse to guess
+  // Multiple shops — use configured default or refuse to guess
+  const defaultDomain = process.env.DEFAULT_SHOP;
+  if (defaultDomain) {
+    const token = config.shops.get(defaultDomain);
+    if (token) return { domain: defaultDomain, accessToken: token };
+  }
+
   const available = [...config.shops.keys()].join(", ");
   throw new Error(`Multiple shops available (${available}). Use shopify_shop(action: "select") to choose one first.`);
 }
