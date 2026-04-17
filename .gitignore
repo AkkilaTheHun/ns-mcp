@@ -1,0 +1,33 @@
+# Environment Configuration
+.env
+.env.*
+!.env.example
+
+# Dependency directory
+node_modules
+
+# Test coverage directory
+coverage
+
+# Ignore Apple macOS Desktop Services Store
+.DS_Store
+
+# Logs
+logs
+*.log
+
+# Build output
+dist
+
+# extensions build output
+extensions/*/build
+extensions/*/dist
+
+# lock files
+
+
+
+
+# Ignore shopify files created during app dev
+.shopify/*
+.shopify.lock
