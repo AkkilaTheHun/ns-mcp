@@ -27,14 +27,14 @@ const PRODUCT_FIELDS = `
     position
     values
   }
-  images(first: 20) {
+  media(first: 20) {
     edges {
       node {
-        id
-        url
-        altText
-        width
-        height
+        ... on MediaImage {
+          id
+          image { url altText width height }
+          status
+        }
       }
     }
   }
@@ -48,18 +48,22 @@ const PRODUCT_FIELDS = `
         price
         compareAtPrice
         inventoryQuantity
-        weight
-        weightUnit
-        requiresShipping
+        inventoryPolicy
         taxable
+        position
         selectedOptions {
           name
           value
         }
-        image {
-          id
-          url
-          altText
+        media(first: 5) {
+          edges {
+            node {
+              ... on MediaImage {
+                id
+                image { url altText }
+              }
+            }
+          }
         }
       }
     }
@@ -103,9 +107,10 @@ const PRODUCT_SUMMARY_FIELDS = `
       }
     }
   }
-  featuredImage {
-    url
-    altText
+  featuredMedia {
+    ... on MediaImage {
+      image { url altText }
+    }
   }
 `;
 
@@ -300,8 +305,6 @@ export function registerProductTools(server: McpServer): void {
         compareAtPrice: z.string().optional().describe("Compare at price"),
         sku: z.string().optional().describe("SKU"),
         barcode: z.string().optional().describe("Barcode"),
-        weight: z.number().optional().describe("Weight"),
-        weightUnit: z.enum(["GRAMS", "KILOGRAMS", "OUNCES", "POUNDS"]).optional(),
         taxable: z.boolean().optional(),
         inventoryPolicy: z.enum(["DENY", "CONTINUE"]).optional().describe("DENY = stop selling when out of stock, CONTINUE = allow overselling"),
         optionValues: z.array(z.object({
@@ -356,10 +359,8 @@ export function registerProductTools(server: McpServer): void {
         compareAtPrice: z.string().optional(),
         sku: z.string().optional(),
         barcode: z.string().optional(),
-        weight: z.number().optional(),
-        weightUnit: z.enum(["GRAMS", "KILOGRAMS", "OUNCES", "POUNDS"]).optional(),
-        requiresShipping: z.boolean().optional(),
         taxable: z.boolean().optional(),
+        inventoryPolicy: z.enum(["DENY", "CONTINUE"]).optional(),
         metafields: z.array(z.object({
           namespace: z.string(),
           key: z.string(),
@@ -465,30 +466,31 @@ export function registerProductTools(server: McpServer): void {
     },
   );
 
-  // --- Delete Product Metafield ---
+  // --- Delete Metafields ---
   server.tool(
-    "delete_metafield",
-    "Delete a metafield by its ID.",
+    "delete_metafields",
+    "Delete one or more metafields by their IDs.",
     {
-      id: z.string().describe("Metafield GID to delete"),
+      ids: z.array(z.string()).describe("Metafield GIDs to delete"),
     },
-    async ({ id }) => {
+    async ({ ids }) => {
+      const metafields = ids.map((id) => ({ ownerId: "", key: "", namespace: "", id }));
       const res = await shopifyGraphQL<{
-        metafieldDelete: {
-          deletedId: string;
+        metafieldsDelete: {
+          deletedMetafields: Array<{ ownerId: string; key: string; namespace: string }>;
           userErrors: Array<{ field: string[]; message: string }>;
         };
       }>(`
-        mutation MetafieldDelete($input: MetafieldDeleteInput!) {
-          metafieldDelete(input: $input) {
-            deletedId
+        mutation MetafieldsDelete($metafields: [MetafieldIdentifierInput!]!) {
+          metafieldsDelete(metafields: $metafields) {
+            deletedMetafields { ownerId key namespace }
             userErrors { field message }
           }
         }
-      `, { input: { id } });
+      `, { metafields: ids.map((id) => ({ id })) });
 
-      throwIfUserErrors(res.data?.metafieldDelete?.userErrors, "metafieldDelete");
-      return { content: [{ type: "text" as const, text: `Metafield ${res.data?.metafieldDelete?.deletedId} deleted.` }] };
+      throwIfUserErrors(res.data?.metafieldsDelete?.userErrors, "metafieldsDelete");
+      return { content: [{ type: "text" as const, text: `Deleted ${ids.length} metafield(s).` }] };
     },
   );
 
@@ -535,10 +537,10 @@ export function registerProductTools(server: McpServer): void {
     },
   );
 
-  // --- Update Product Media / Images ---
+  // --- Add Media to Product ---
   server.tool(
-    "create_product_media",
-    "Add images or other media to a product from URLs.",
+    "add_product_media",
+    "Add images or other media to a product from URLs using productSet.",
     {
       productId: z.string().describe("Product GID"),
       media: z.array(z.object({
@@ -549,27 +551,35 @@ export function registerProductTools(server: McpServer): void {
     },
     async ({ productId, media }) => {
       const res = await shopifyGraphQL<{
-        productCreateMedia: {
-          media: unknown[];
-          mediaUserErrors: Array<{ field: string[]; message: string }>;
+        productSet: {
+          product: unknown;
+          userErrors: Array<{ field: string[]; message: string }>;
         };
       }>(`
-        mutation ProductCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-          productCreateMedia(productId: $productId, media: $media) {
-            media {
-              ... on MediaImage {
-                id
-                image { url altText }
-                status
+        mutation ProductSet($synchronous: Boolean!, $input: ProductSetInput!) {
+          productSet(synchronous: $synchronous, input: $input) {
+            product {
+              id
+              title
+              media(first: 20) {
+                edges {
+                  node {
+                    ... on MediaImage {
+                      id
+                      image { url altText }
+                      status
+                    }
+                  }
+                }
               }
             }
-            mediaUserErrors { field message }
+            userErrors { field message }
           }
         }
-      `, { productId, media });
+      `, { synchronous: true, input: { id: productId, media } });
 
-      throwIfUserErrors(res.data?.productCreateMedia?.mediaUserErrors, "productCreateMedia");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.productCreateMedia?.media, null, 2) }] };
+      throwIfUserErrors(res.data?.productSet?.userErrors, "productSet");
+      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.productSet?.product, null, 2) }] };
     },
   );
 }
