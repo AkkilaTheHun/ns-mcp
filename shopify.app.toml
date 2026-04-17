@@ -2,7 +2,7 @@
 
 client_id = "71f2b24d01a31d8c5586743258b84774"
 name = "nailstuff-mcp"
-application_url = "https://ns-mcp-325z.onrender.com"
+application_url = "https://mcp.nailstuff.co"
 embedded = false
 
 [build]
@@ -15,4 +15,4 @@ api_version = "2026-07"
 scopes = "read_products,write_products,read_orders,write_orders,read_customers,write_customers,read_content,write_content,read_themes,write_themes,read_inventory,write_inventory,read_discounts,write_discounts,read_metaobjects,write_metaobjects,read_publications,write_publications,read_files,write_files,read_online_store_navigation,write_online_store_navigation,read_draft_orders,write_draft_orders,read_locations"
 
 [auth]
-redirect_urls = [ "https://ns-mcp-325z.onrender.com/auth/callback" ]
+redirect_urls = [ "https://mcp.nailstuff.co/auth/callback" ]
