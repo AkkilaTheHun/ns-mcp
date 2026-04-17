@@ -44,7 +44,7 @@ app.post("/mcp", mcpAuth, async (req, res) => {
     if (sessionId && transports.has(sessionId)) {
       // Reuse existing transport for the session
       const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res);
+      await transport.handleRequest(req, res, req.body);
       return;
     }
 
@@ -63,7 +63,7 @@ app.post("/mcp", mcpAuth, async (req, res) => {
       }
     };
 
-    await transport.handleRequest(req, res);
+    await transport.handleRequest(req, res, req.body);
 
     // Store the transport after handling (session ID is now set)
     if (transport.sessionId) {
@@ -86,7 +86,7 @@ app.get("/mcp", mcpAuth, async (req, res) => {
   }
 
   const transport = transports.get(sessionId)!;
-  await transport.handleRequest(req, res);
+  await transport.handleRequest(req, res, req.body);
 });
 
 // Handle DELETE for session cleanup
@@ -98,7 +98,7 @@ app.delete("/mcp", mcpAuth, async (req, res) => {
   }
 
   const transport = transports.get(sessionId)!;
-  await transport.handleRequest(req, res);
+  await transport.handleRequest(req, res, req.body);
 });
 
 // --- Start server ---
