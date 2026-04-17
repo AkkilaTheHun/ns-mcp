@@ -89,12 +89,18 @@ export async function handleAuthCallback(req: Request, res: Response): Promise<v
 }
 
 // In-memory store for authorization codes (short-lived)
-const authCodes = new Map<string, { clientId: string; redirectUri: string; expiresAt: number }>();
+const authCodes = new Map<string, {
+  clientId: string;
+  redirectUri: string;
+  codeChallenge?: string;
+  codeChallengeMethod?: string;
+  expiresAt: number;
+}>();
 
 /**
  * OAuth 2.0 Authorization endpoint.
- * ChatGPT redirects users here, we show a simple consent page,
- * then redirect back with an authorization code.
+ * Supports both confidential clients (client_id/secret) and
+ * public clients with PKCE (Claude Desktop, etc.).
  */
 export function handleOAuthAuthorize(req: Request, res: Response): void {
   const {
@@ -102,6 +108,8 @@ export function handleOAuthAuthorize(req: Request, res: Response): void {
     redirect_uri,
     response_type,
     state,
+    code_challenge,
+    code_challenge_method,
   } = req.query as Record<string, string>;
 
   if (response_type !== "code") {
@@ -109,18 +117,19 @@ export function handleOAuthAuthorize(req: Request, res: Response): void {
     return;
   }
 
-  if (client_id !== config.oauthClientId) {
-    res.status(401).json({ error: "invalid_client" });
+  if (!client_id || !redirect_uri) {
+    res.status(400).json({ error: "invalid_request", error_description: "Missing client_id or redirect_uri" });
     return;
   }
 
   // Auto-approve: generate code and redirect back immediately.
-  // For a production app you'd show a consent screen here.
   const code = crypto.randomUUID();
   authCodes.set(code, {
     clientId: client_id,
     redirectUri: redirect_uri,
-    expiresAt: Date.now() + 60_000, // 1 minute expiry
+    codeChallenge: code_challenge,
+    codeChallengeMethod: code_challenge_method,
+    expiresAt: Date.now() + 300_000, // 5 minute expiry
   });
 
   const redirectUrl = new URL(redirect_uri);
@@ -131,8 +140,20 @@ export function handleOAuthAuthorize(req: Request, res: Response): void {
 }
 
 /**
+ * Verify PKCE code_verifier against stored code_challenge.
+ */
+async function verifyPKCE(codeVerifier: string, codeChallenge: string, method: string): Promise<boolean> {
+  if (method === "plain") return codeVerifier === codeChallenge;
+  // S256
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(codeVerifier));
+  const base64 = Buffer.from(digest).toString("base64url");
+  return base64 === codeChallenge;
+}
+
+/**
  * OAuth 2.0 Token endpoint.
- * Supports both authorization_code and client_credentials grant types.
+ * Supports authorization_code (with optional PKCE) and client_credentials.
  */
 export async function handleOAuthToken(req: Request, res: Response): Promise<void> {
   const grantType = req.body.grant_type;
@@ -149,27 +170,41 @@ export async function handleOAuthToken(req: Request, res: Response): Promise<voi
     clientSecret = clientSecret ?? secret;
   }
 
-  if (
-    !clientId || !clientSecret ||
-    clientId !== config.oauthClientId ||
-    clientSecret !== config.oauthClientSecret
-  ) {
-    res.status(401).json({ error: "invalid_client" });
-    return;
-  }
-
   if (grantType === "authorization_code") {
     const code = req.body.code as string | undefined;
+    const codeVerifier = req.body.code_verifier as string | undefined;
+
     if (!code) {
       res.status(400).json({ error: "invalid_request", error_description: "Missing code" });
       return;
     }
 
     const stored = authCodes.get(code);
-    if (!stored || stored.clientId !== clientId || stored.expiresAt < Date.now()) {
-      authCodes.delete(code ?? "");
+    if (!stored || stored.expiresAt < Date.now()) {
+      authCodes.delete(code);
       res.status(400).json({ error: "invalid_grant" });
       return;
+    }
+
+    // Verify client identity: either client_secret or PKCE code_verifier
+    if (stored.codeChallenge) {
+      // PKCE flow (public client like Claude Desktop)
+      if (!codeVerifier) {
+        res.status(400).json({ error: "invalid_request", error_description: "Missing code_verifier" });
+        return;
+      }
+      const valid = await verifyPKCE(codeVerifier, stored.codeChallenge, stored.codeChallengeMethod ?? "S256");
+      if (!valid) {
+        authCodes.delete(code);
+        res.status(400).json({ error: "invalid_grant", error_description: "Invalid code_verifier" });
+        return;
+      }
+    } else {
+      // Confidential client — verify client_secret
+      if (!clientSecret || clientId !== config.oauthClientId || clientSecret !== config.oauthClientSecret) {
+        res.status(401).json({ error: "invalid_client" });
+        return;
+      }
     }
 
     authCodes.delete(code);
@@ -183,6 +218,11 @@ export async function handleOAuthToken(req: Request, res: Response): Promise<voi
   }
 
   if (grantType === "client_credentials") {
+    if (!clientId || !clientSecret || clientId !== config.oauthClientId || clientSecret !== config.oauthClientSecret) {
+      res.status(401).json({ error: "invalid_client" });
+      return;
+    }
+
     res.json({
       access_token: config.mcpAuthToken,
       token_type: "bearer",

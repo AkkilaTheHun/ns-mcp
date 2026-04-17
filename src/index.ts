@@ -19,9 +19,30 @@ app.get("/health", (_req, res) => {
 app.get("/auth", handleAuthBegin);
 app.get("/auth/callback", handleAuthCallback);
 
-// --- OAuth 2.0 endpoints (for ChatGPT and other MCP clients) ---
+// --- OAuth 2.0 endpoints (for ChatGPT, Claude Desktop, and other MCP clients) ---
 app.get("/oauth/authorize", handleOAuthAuthorize);
 app.post("/oauth/token", handleOAuthToken);
+
+// OAuth 2.0 discovery metadata
+app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+  res.json({
+    issuer: config.hostUrl,
+    authorization_endpoint: `${config.hostUrl}/oauth/authorize`,
+    token_endpoint: `${config.hostUrl}/oauth/token`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "client_credentials"],
+    token_endpoint_auth_methods_supported: ["client_secret_post", "client_secret_basic"],
+    code_challenge_methods_supported: ["S256"],
+  });
+});
+
+// Protected resource metadata (points clients to the auth server)
+app.get("/.well-known/oauth-protected-resource", (_req, res) => {
+  res.json({
+    resource: `${config.hostUrl}/mcp`,
+    authorization_servers: [config.hostUrl],
+  });
+});
 
 // --- MCP endpoint ---
 // Auth middleware for MCP clients
@@ -33,6 +54,8 @@ function mcpAuth(
   if (config.mcpAuthToken) {
     const authHeader = req.headers.authorization;
     if (authHeader !== `Bearer ${config.mcpAuthToken}`) {
+      // Return 401 with resource metadata link so clients can discover OAuth endpoints
+      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${config.hostUrl}/.well-known/oauth-protected-resource"`);
       res.status(401).json({ error: "Unauthorized" });
       return;
     }
