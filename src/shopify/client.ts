@@ -1,4 +1,6 @@
 import { config, getShopCredentials } from "../config.js";
+import { getCurrentSessionId } from "../context.js";
+import { getSessionShop } from "../session.js";
 
 interface GraphQLResponse<T = unknown> {
   data?: T;
@@ -16,7 +18,15 @@ export async function shopifyGraphQL<T = unknown>(
   variables?: Record<string, unknown>,
   shopDomain?: string,
 ): Promise<GraphQLResponse<T>> {
-  const shop = getShopCredentials(shopDomain);
+  // Resolve shop: explicit param > session selection > default
+  let resolvedDomain = shopDomain;
+  if (!resolvedDomain) {
+    const sessionId = getCurrentSessionId();
+    if (sessionId) {
+      resolvedDomain = getSessionShop(sessionId);
+    }
+  }
+  const shop = getShopCredentials(resolvedDomain);
   const url = `https://${shop.domain}/admin/api/${config.shopifyApiVersion}/graphql.json`;
 
   const res = await fetch(url, {

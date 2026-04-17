@@ -2,6 +2,8 @@ import express from "express";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./mcp/server.js";
 import { config } from "./config.js";
+import { requestContext } from "./context.js";
+import { clearSession } from "./session.js";
 import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthToken } from "./shopify/auth.js";
 
 const app = express();
@@ -47,9 +49,11 @@ app.post("/mcp", mcpAuth, async (req, res) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
 
     if (sessionId && transports.has(sessionId)) {
-      // Reuse existing transport for the session
       const transport = transports.get(sessionId)!;
-      await transport.handleRequest(req, res, req.body);
+      // Run with session context so tools can access the session ID
+      await requestContext.run({ sessionId }, () =>
+        transport.handleRequest(req, res, req.body),
+      );
       return;
     }
 
@@ -64,6 +68,7 @@ app.post("/mcp", mcpAuth, async (req, res) => {
     // Store transport by session ID after connection
     transport.onclose = () => {
       if (transport.sessionId) {
+        clearSession(transport.sessionId);
         transports.delete(transport.sessionId);
       }
     };
@@ -91,7 +96,9 @@ app.get("/mcp", mcpAuth, async (req, res) => {
   }
 
   const transport = transports.get(sessionId)!;
-  await transport.handleRequest(req, res, req.body);
+  await requestContext.run({ sessionId }, () =>
+    transport.handleRequest(req, res, req.body),
+  );
 });
 
 // Handle DELETE for session cleanup
@@ -103,7 +110,9 @@ app.delete("/mcp", mcpAuth, async (req, res) => {
   }
 
   const transport = transports.get(sessionId)!;
-  await transport.handleRequest(req, res, req.body);
+  await requestContext.run({ sessionId }, () =>
+    transport.handleRequest(req, res, req.body),
+  );
 });
 
 // --- Start server ---
