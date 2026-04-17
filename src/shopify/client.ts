@@ -29,7 +29,15 @@ export async function shopifyGraphQL<T = unknown>(
     throw new Error(`Shopify API error: ${res.status} ${res.statusText}`);
   }
 
-  return res.json() as Promise<GraphQLResponse<T>>;
+  const json = (await res.json()) as GraphQLResponse<T>;
+
+  // Throw on top-level GraphQL errors (schema errors, auth errors, etc.)
+  if (json.errors && json.errors.length > 0) {
+    const messages = json.errors.map((e) => e.message);
+    throw new Error(`Shopify GraphQL error:\n${messages.join("\n")}`);
+  }
+
+  return json;
 }
 
 /**
@@ -45,4 +53,11 @@ export function throwIfUserErrors(
     );
     throw new Error(`${operation} failed:\n${messages.join("\n")}`);
   }
+}
+
+/**
+ * Safely serialize data for MCP text content — never returns undefined.
+ */
+export function toText(data: unknown): string {
+  return JSON.stringify(data, null, 2) ?? "null";
 }

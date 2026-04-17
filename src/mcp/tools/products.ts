@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { shopifyGraphQL, throwIfUserErrors } from "../../shopify/client.js";
+import { shopifyGraphQL, throwIfUserErrors, toText } from "../../shopify/client.js";
 
 // --- GraphQL Fragments ---
 
@@ -144,7 +144,7 @@ export function registerProductTools(server: McpServer): void {
         }
       `, { first, after, query, sortKey, reverse });
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -173,7 +173,7 @@ export function registerProductTools(server: McpServer): void {
       }
 
       const res = await shopifyGraphQL(query, variables);
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -221,7 +221,7 @@ export function registerProductTools(server: McpServer): void {
       `, { product: input });
 
       throwIfUserErrors(res.data?.productCreate?.userErrors, "productCreate");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.productCreate?.product, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -265,7 +265,7 @@ export function registerProductTools(server: McpServer): void {
       `, { product: input });
 
       throwIfUserErrors(res.data?.productUpdate?.userErrors, "productUpdate");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.productUpdate?.product, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -343,7 +343,7 @@ export function registerProductTools(server: McpServer): void {
       `, { productId, variants, strategy });
 
       throwIfUserErrors(res.data?.productVariantsBulkCreate?.userErrors, "productVariantsBulkCreate");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.productVariantsBulkCreate?.productVariants, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -393,7 +393,7 @@ export function registerProductTools(server: McpServer): void {
       `, { productId, variants });
 
       throwIfUserErrors(res.data?.productVariantsBulkUpdate?.userErrors, "productVariantsBulkUpdate");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.productVariantsBulkUpdate?.productVariants, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -462,7 +462,7 @@ export function registerProductTools(server: McpServer): void {
       `, { metafields: metafieldsInput });
 
       throwIfUserErrors(res.data?.metafieldsSet?.userErrors, "metafieldsSet");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.metafieldsSet?.metafields, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -513,7 +513,7 @@ export function registerProductTools(server: McpServer): void {
         }
       `, { query, first });
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -533,7 +533,7 @@ export function registerProductTools(server: McpServer): void {
         }
       `, { query });
 
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 
@@ -579,7 +579,7 @@ export function registerProductTools(server: McpServer): void {
       `, { synchronous: true, input: { id: productId, media } });
 
       throwIfUserErrors(res.data?.productSet?.userErrors, "productSet");
-      return { content: [{ type: "text" as const, text: JSON.stringify(res.data?.productSet?.product, null, 2) }] };
+      return { content: [{ type: "text" as const, text: toText(res.data\1) }] };
     },
   );
 }
