@@ -127,6 +127,8 @@ app.post("/mcp", mcpAuth, async (req, res) => {
     }
   } catch (err) {
     console.error("MCP request error:", err);
+    console.error("Request body:", JSON.stringify(req.body));
+    console.error("Request headers:", JSON.stringify(req.headers));
     if (!res.headersSent) {
       res.status(500).json({ error: "Internal server error" });
     }
@@ -137,7 +139,8 @@ app.post("/mcp", mcpAuth, async (req, res) => {
 app.get("/mcp", mcpAuth, async (req, res) => {
   const sessionId = req.headers["mcp-session-id"] as string | undefined;
   if (!sessionId || !transports.has(sessionId)) {
-    res.status(400).json({ error: "Invalid or missing session ID" });
+    // No session yet — return 405 per MCP spec (GET not supported without session)
+    res.status(405).set("Allow", "POST, DELETE").json({ error: "Method not allowed. Use POST to initialize a session." });
     return;
   }
 
