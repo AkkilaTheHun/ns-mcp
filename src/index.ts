@@ -10,7 +10,10 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- Health check ---
+// --- Root / Health ---
+app.get("/", (_req, res) => {
+  res.json({ name: "nailstuff-mcp", status: "ok", version: "1.0.0", mcp: "/mcp" });
+});
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
 });
