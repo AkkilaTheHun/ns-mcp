@@ -325,9 +325,9 @@ export function registerCollectionGateway(server: McpServer): void {
 - list: List collections (params: first?, after?, query?, sortKey?, reverse?)
 - get: Get collection by ID or handle (params: id?, handle?)
 - count: Count collections (params: query?)
-- create: Create manual collection (params: title, descriptionHtml?, sortOrder?, image?, seo?, metafields?)
-- create_smart: Create smart collection with rules (params: title, ruleSet{appliedDisjunctively, rules[{column, relation, condition}]}, descriptionHtml?, sortOrder?, seo?)
-- update: Update collection (params: id, title?, descriptionHtml?, sortOrder?, ruleSet?, seo?, metafields?)
+- create: Create manual collection (params: title, descriptionHtml?, sortOrder?, image?, seo?{title,description}, metafields?)
+- create_smart: Create smart collection with rules (params: title, ruleSet{appliedDisjunctively, rules[{column, relation, condition}]}, descriptionHtml?, sortOrder?, seo?{title,description})
+- update: Update collection including SEO (params: id, title?, descriptionHtml?, sortOrder?, ruleSet?, seo?{title,description}, metafields?)
 - delete: Delete collection (params: id)
 - add_products: Add products to manual collection (params: collectionId, productIds[])
 - remove_products: Remove products (params: collectionId, productIds[])
@@ -444,7 +444,7 @@ export function registerCollectionGateway(server: McpServer): void {
 export function registerMetafieldGateway(server: McpServer): void {
   server.tool(
     "shopify_metafields",
-    `Manage metafields on any resource (products, collections, customers, orders, etc.). Actions:
+    `Manage custom metafields on any resource (products, collections, customers, orders, etc.). NOT for SEO — use the seo param on shopify_products or shopify_collections instead. Actions:
 - set: Set metafields (params: metafields[{ownerId, namespace, key, value, type}])
 - delete: Delete metafields (params: metafields[{ownerId, namespace, key}])`,
     {
