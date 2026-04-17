@@ -86,12 +86,14 @@ export function registerGraphQLGateway(server: McpServer): void {
 export function registerTranslationGateway(server: McpServer): void {
   server.tool(
     "shopify_translations",
-    `Manage translations for products, collections, pages, and other translatable resources. Supports market-scoped overrides via marketId. Actions:
+    `Manage translations for products, collections, pages, and other translatable resources. Supports market-scoped overrides. Actions:
 - list_locales: List shop's enabled locales
 - list_translatable: List translatable resources of a type (params: resourceType, first?, after?)
-- get: Get translations for a resource (params: resourceId, locale, marketId?)
-- register: Register translations (params: resourceId, translations[{locale, key, value, translatableContentDigest, marketId?}])
-- remove: Remove translations (params: resourceId, locales[], keys[], marketId?)
+- get: Get translations for a resource (params: resourceId, locale, marketId?) — pass marketId to get market-specific overrides
+- register: Register translations (params: resourceId, translations[{locale, key, value, translatableContentDigest, marketId?}]) — include marketId in EACH translation object for market-scoped overrides
+- remove: Remove translations (params: resourceId, locales[], keys[], marketId?) — pass top-level marketId to remove market-specific overrides
+
+To register a market-scoped translation: translations: [{locale: "en", key: "title", value: "US Title", translatableContentDigest: "abc123", marketId: "gid://shopify/Market/123"}]
 
 resourceType examples: PRODUCT, COLLECTION, ONLINE_STORE_PAGE, ONLINE_STORE_ARTICLE, METAOBJECT, MENU, LINK`,
     {
@@ -126,14 +128,14 @@ resourceType examples: PRODUCT, COLLECTION, ONLINE_STORE_PAGE, ONLINE_STORE_ARTI
         }
         case "get": {
           if (!p.resourceId || !p.locale) return fail("resourceId and locale required");
-          const res = await gql(`query($resourceId:ID!,$locale:String!,$marketId:ID){translatableResource(resourceId:$resourceId){resourceId translatableContent{key value digest locale} translations(locale:$locale,marketId:$marketId){key value locale outdated marketId}}}`,
+          const res = await gql(`query($resourceId:ID!,$locale:String!,$marketId:ID){translatableResource(resourceId:$resourceId){resourceId translatableContent{key value digest locale} translations(locale:$locale,marketId:$marketId){key value locale outdated market{id}}}}`,
             { resourceId: p.resourceId, locale: p.locale, marketId: p.marketId });
           return text(res.data);
         }
         case "register": {
           if (!p.resourceId || !p.translations) return fail("resourceId and translations required");
           const res = await gql<{ translationsRegister: { translations: unknown[]; userErrors: Array<{ field: string[]; message: string }> } }>(
-            `mutation($resourceId:ID!,$translations:[TranslationInput!]!){translationsRegister(resourceId:$resourceId,translations:$translations){translations{key value locale marketId}userErrors{field message}}}`,
+            `mutation($resourceId:ID!,$translations:[TranslationInput!]!){translationsRegister(resourceId:$resourceId,translations:$translations){translations{key value locale market{id}}userErrors{field message}}}`,
             { resourceId: p.resourceId, translations: p.translations });
           checkErrors(res.data?.translationsRegister?.userErrors, "translationsRegister");
           return text(res.data?.translationsRegister?.translations);
