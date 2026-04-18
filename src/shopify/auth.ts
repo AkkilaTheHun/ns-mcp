@@ -107,6 +107,8 @@ const authCodes = new Map<string, {
  * OAuth 2.0 Authorization endpoint.
  * Supports both confidential clients (client_id/secret) and
  * public clients with PKCE (Claude Desktop, etc.).
+ *
+ * Requires MCP_OAUTH_PASSWORD — shows a login page before issuing auth codes.
  */
 export function handleOAuthAuthorize(req: Request, res: Response): void {
   const {
@@ -128,14 +130,89 @@ export function handleOAuthAuthorize(req: Request, res: Response): void {
     return;
   }
 
-  // Auto-approve: generate code and redirect back immediately.
+  const oauthPassword = process.env.MCP_OAUTH_PASSWORD;
+  if (!oauthPassword) {
+    res.status(500).json({ error: "server_error", error_description: "OAuth password not configured" });
+    return;
+  }
+
+  // Build the original query string to preserve on form POST
+  const qs = new URLSearchParams(req.query as Record<string, string>).toString();
+
+  // Show login page
+  res.type("html").send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NailStuff — Authorize</title>
+<style>
+  body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
+  .card{background:#fff;border-radius:12px;padding:2rem;max-width:360px;width:100%;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+  h1{font-size:1.25rem;margin:0 0 .5rem}
+  p{color:#666;font-size:.875rem;margin:0 0 1.5rem}
+  input[type=password]{width:100%;padding:.75rem;border:1px solid #ddd;border-radius:8px;font-size:1rem;box-sizing:border-box}
+  button{width:100%;padding:.75rem;background:#000;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;margin-top:1rem}
+  button:hover{background:#333}
+  .error{color:#e53e3e;font-size:.875rem;margin-top:.5rem}
+</style></head>
+<body><div class="card">
+  <h1>NailStuff MCP</h1>
+  <p>Enter the password to connect your AI assistant.</p>
+  <form method="POST" action="/oauth/authorize/verify?${qs}">
+    <input type="password" name="password" placeholder="Password" required autofocus>
+    <button type="submit">Authorize</button>
+  </form>
+</div></body></html>`);
+}
+
+/**
+ * Handles the password form submission from the authorize page.
+ */
+export function handleOAuthAuthorizeVerify(req: Request, res: Response): void {
+  const {
+    client_id,
+    redirect_uri,
+    state,
+    code_challenge,
+    code_challenge_method,
+  } = req.query as Record<string, string>;
+
+  const password = req.body.password as string | undefined;
+  const oauthPassword = process.env.MCP_OAUTH_PASSWORD;
+
+  if (!password || password !== oauthPassword) {
+    const qs = new URLSearchParams(req.query as Record<string, string>).toString();
+    res.type("html").send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NailStuff — Authorize</title>
+<style>
+  body{font-family:system-ui,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5}
+  .card{background:#fff;border-radius:12px;padding:2rem;max-width:360px;width:100%;box-shadow:0 2px 8px rgba(0,0,0,.1)}
+  h1{font-size:1.25rem;margin:0 0 .5rem}
+  p{color:#666;font-size:.875rem;margin:0 0 1.5rem}
+  input[type=password]{width:100%;padding:.75rem;border:1px solid #ddd;border-radius:8px;font-size:1rem;box-sizing:border-box}
+  button{width:100%;padding:.75rem;background:#000;color:#fff;border:none;border-radius:8px;font-size:1rem;cursor:pointer;margin-top:1rem}
+  button:hover{background:#333}
+  .error{color:#e53e3e;font-size:.875rem;margin-top:.5rem}
+</style></head>
+<body><div class="card">
+  <h1>NailStuff MCP</h1>
+  <p>Enter the password to connect your AI assistant.</p>
+  <form method="POST" action="/oauth/authorize/verify?${qs}">
+    <input type="password" name="password" placeholder="Password" required autofocus>
+    <button type="submit">Authorize</button>
+    <div class="error">Incorrect password. Try again.</div>
+  </form>
+</div></body></html>`);
+    return;
+  }
+
+  // Password correct — issue authorization code
   const code = crypto.randomUUID();
   authCodes.set(code, {
     clientId: client_id,
     redirectUri: redirect_uri,
     codeChallenge: code_challenge,
     codeChallengeMethod: code_challenge_method,
-    expiresAt: Date.now() + 300_000, // 5 minute expiry
+    expiresAt: Date.now() + 300_000,
   });
 
   const redirectUrl = new URL(redirect_uri);

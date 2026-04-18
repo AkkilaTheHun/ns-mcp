@@ -4,15 +4,35 @@ import { createMcpServer } from "./mcp/server.js";
 import { config } from "./config.js";
 import { requestContext } from "./context.js";
 import { clearSession } from "./session.js";
-import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthToken, registeredOAuthClients } from "./shopify/auth.js";
+import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthAuthorizeVerify, handleOAuthToken, registeredOAuthClients } from "./shopify/auth.js";
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// --- Auth middleware for MCP clients ---
+function mcpAuth(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): void {
+  if (!config.mcpAuthToken) {
+    console.error("FATAL: MCP_AUTH_TOKEN is not set — rejecting all MCP requests");
+    res.status(500).json({ error: "Server misconfigured" });
+    return;
+  }
+  const authHeader = req.headers.authorization;
+  if (authHeader !== `Bearer ${config.mcpAuthToken}`) {
+    res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${config.hostUrl}/.well-known/oauth-protected-resource"`);
+    res.status(401).json({ error: "Unauthorized" });
+    return;
+  }
+  next();
+}
+
 // --- Root / Health ---
 app.get("/", (_req, res) => {
-  res.json({ name: "nailstuff-mcp", status: "ok", version: "1.0.0", mcp: "/mcp" });
+  res.json({ name: "nailstuff-mcp", status: "ok", version: "1.0.0" });
 });
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
@@ -24,9 +44,13 @@ app.get("/auth/callback", handleAuthCallback);
 
 // --- OAuth 2.0 endpoints (for ChatGPT, Claude Desktop, and other MCP clients) ---
 app.get("/oauth/authorize", handleOAuthAuthorize);
+app.post("/oauth/authorize/verify", handleOAuthAuthorizeVerify);
 app.post("/oauth/token", handleOAuthToken);
 
 // OAuth 2.0 Dynamic Client Registration (RFC 7591)
+// Open by design — Claude Desktop needs this before it has a token.
+// Security: registering a client alone grants no access; the token endpoint
+// only issues tokens after a valid PKCE or client_secret exchange.
 app.post("/oauth/register", (req, res) => {
   const clientId = crypto.randomUUID();
   const clientSecret = crypto.randomUUID();
@@ -69,26 +93,6 @@ app.get("/.well-known/oauth-protected-resource", (_req, res) => {
 });
 
 // --- MCP endpoint ---
-// Auth middleware for MCP clients
-function mcpAuth(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction,
-): void {
-  if (config.mcpAuthToken) {
-    const authHeader = req.headers.authorization;
-    if (authHeader !== `Bearer ${config.mcpAuthToken}`) {
-      // Return 401 with resource metadata link so clients can discover OAuth endpoints
-      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${config.hostUrl}/.well-known/oauth-protected-resource"`);
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-  }
-  next();
-}
-
-// Use shared registered clients map from auth module
-
 // Map to track active transports by session ID
 const transports = new Map<string, StreamableHTTPServerTransport>();
 
