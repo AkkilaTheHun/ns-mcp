@@ -94,7 +94,26 @@ function withAuditLog(server: McpServer): McpServer {
 export function createMcpServer(): McpServer {
   const server = withAuditLog(new McpServer({
     name: "nailstuff-mcp",
-    version: "1.0.0",
+    version: "1.1.0",
+    description: `NailStuff MCP — unified API for NailStuff e-commerce operations.
+
+This server provides tools across TWO platforms:
+
+SHOPIFY (shopify_* tools):
+  Products, variants, collections, orders, customers, discounts, inventory,
+  navigation, content, files, draft orders, metafields, metaobjects,
+  translations, and raw GraphQL access.
+
+GOOGLE (google_* tools):
+  google_analytics — GA4 reports, realtime data, property discovery.
+  google_search_console — search performance, URL inspection, sitemaps.
+
+When the user asks about traffic, SEO performance, search queries, page views,
+sessions, bounce rate, or anything analytics-related, use the google_analytics
+or google_search_console tools — NOT external APIs or web searches.
+
+When the user asks about products, orders, customers, or store operations,
+use the shopify_* tools.`,
   }));
 
   // Gateway tools
