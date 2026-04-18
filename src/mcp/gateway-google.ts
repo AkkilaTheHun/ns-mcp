@@ -41,19 +41,30 @@ Common dimensions: date, country, city, deviceCategory, sessionSource, sessionMe
         if (action === "list_properties") {
           const auth = getGoogleAuth();
           const analyticsAdmin = google.analyticsadmin({ version: "v1beta", auth });
-          const res = await analyticsAdmin.properties.list({
-            filter: "parent:accounts/-",
-            pageSize: 50,
-          });
-          const properties = (res.data.properties ?? []).map(p => ({
-            propertyId: p.name?.replace("properties/", ""),
-            displayName: p.displayName,
-            timeZone: p.timeZone,
-            currencyCode: p.currencyCode,
-            industryCategory: p.industryCategory,
-            createTime: p.createTime,
-          }));
-          return properties.length ? text(properties) : fail("No GA4 properties accessible by this service account.");
+
+          // List accounts first, then properties for each account
+          const accountsRes = await analyticsAdmin.accounts.list({ pageSize: 100 });
+          const accounts = accountsRes.data.accounts ?? [];
+          if (!accounts.length) return fail("No GA accounts accessible by this service account. Add ns-datafeed@ns-datafeed.iam.gserviceaccount.com as a Viewer in GA4 Admin → Account Access Management.");
+
+          const allProperties: Record<string, unknown>[] = [];
+          for (const account of accounts) {
+            const res = await analyticsAdmin.properties.list({
+              filter: `parent:${account.name}`,
+              pageSize: 50,
+            });
+            for (const p of res.data.properties ?? []) {
+              allProperties.push({
+                propertyId: p.name?.replace("properties/", ""),
+                displayName: p.displayName,
+                account: account.displayName,
+                timeZone: p.timeZone,
+                currencyCode: p.currencyCode,
+                industryCategory: p.industryCategory,
+              });
+            }
+          }
+          return allProperties.length ? text(allProperties) : fail("Accounts found but no GA4 properties accessible.");
         }
 
         if (action === "run_report") {
