@@ -1,4 +1,5 @@
 import express from "express";
+import rateLimit from "express-rate-limit";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer } from "./mcp/server.js";
 import { config } from "./config.js";
@@ -42,9 +43,18 @@ app.get("/health", (_req, res) => {
 app.get("/auth", handleAuthBegin);
 app.get("/auth/callback", handleAuthCallback);
 
+// Rate limit OAuth authorize — 5 attempts per 15 minutes per IP
+const oauthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many attempts. Try again later." },
+});
+
 // --- OAuth 2.0 endpoints (for ChatGPT, Claude Desktop, and other MCP clients) ---
 app.get("/oauth/authorize", handleOAuthAuthorize);
-app.post("/oauth/authorize/verify", handleOAuthAuthorizeVerify);
+app.post("/oauth/authorize/verify", oauthLimiter, handleOAuthAuthorizeVerify);
 app.post("/oauth/token", handleOAuthToken);
 
 // OAuth 2.0 Dynamic Client Registration (RFC 7591)
