@@ -20,6 +20,7 @@ import {
   registerDraftOrderGateway,
   registerMetaobjectGateway,
 } from "./gateway2.js";
+import { registerAnalyticsGateway, registerSearchConsoleGateway } from "./gateway-google.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -113,6 +114,10 @@ export function createMcpServer(): McpServer {
   registerFileGateway(server);         // list, get, create, update, delete
   registerDraftOrderGateway(server);   // list, get, create, update, complete, delete
   registerMetaobjectGateway(server);   // definitions + entries CRUD
+
+  // Google tools
+  registerAnalyticsGateway(server);      // GA4: list_properties, run_report, get_realtime
+  registerSearchConsoleGateway(server);  // GSC: list_sites, query, inspect_url, list_sitemaps
 
   // Prompts (pre-built workflows)
   registerPrompts(server);
