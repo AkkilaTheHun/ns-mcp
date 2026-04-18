@@ -20,7 +20,7 @@ import {
   registerDraftOrderGateway,
   registerMetaobjectGateway,
 } from "./gateway2.js";
-import { registerAnalyticsGateway, registerSearchConsoleGateway } from "./gateway-google.js";
+import { registerAnalyticsGateway, registerSearchConsoleGateway, registerIndexingGateway, registerTagManagerGateway } from "./gateway-google.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -105,8 +105,10 @@ SHOPIFY (shopify_* tools):
   translations, and raw GraphQL access.
 
 GOOGLE (google_* tools):
-  google_analytics — GA4 reports, realtime data, property discovery.
+  google_analytics — GA4 reports, realtime data, admin (key events, custom dimensions/metrics, audiences, data streams).
   google_search_console — search performance, URL inspection, sitemaps.
+  google_indexing — request Google to crawl/index URLs immediately.
+  google_tag_manager — manage GTM tags, triggers, variables, and publish versions.
 
 When the user asks about traffic, SEO performance, search queries, page views,
 sessions, bounce rate, or anything analytics-related, use the google_analytics
@@ -135,8 +137,10 @@ use the shopify_* tools.`,
   registerMetaobjectGateway(server);   // definitions + entries CRUD
 
   // Google tools
-  registerAnalyticsGateway(server);      // GA4: list_properties, run_report, get_realtime
+  registerAnalyticsGateway(server);      // GA4: reports, realtime, admin (key events, dimensions, metrics, audiences)
   registerSearchConsoleGateway(server);  // GSC: list_sites, query, inspect_url, list_sitemaps
+  registerIndexingGateway(server);       // Indexing: notify_updated, notify_removed, get_status, batch_update
+  registerTagManagerGateway(server);     // GTM: tags, triggers, variables, versioning, publishing
 
   // Prompts (pre-built workflows)
   registerPrompts(server);

@@ -17,7 +17,13 @@ export function getGoogleAuth(): GoogleAuth {
       credentials,
       scopes: [
         "https://www.googleapis.com/auth/analytics.readonly",
+        "https://www.googleapis.com/auth/analytics.edit",
         "https://www.googleapis.com/auth/webmasters.readonly",
+        "https://www.googleapis.com/auth/indexing",
+        "https://www.googleapis.com/auth/tagmanager.edit.containers",
+        "https://www.googleapis.com/auth/tagmanager.readonly",
+        "https://www.googleapis.com/auth/tagmanager.edit.containerversions",
+        "https://www.googleapis.com/auth/tagmanager.publish",
       ],
     });
   }
