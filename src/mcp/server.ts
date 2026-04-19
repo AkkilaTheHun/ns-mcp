@@ -22,6 +22,7 @@ import {
 } from "./gateway2.js";
 import { registerAnalyticsGateway, registerSearchConsoleGateway, registerIndexingGateway, registerTagManagerGateway } from "./gateway-google.js";
 import { registerImageTools } from "./tools/images.js";
+import { registerIngestTools } from "./tools/ingest.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -145,6 +146,7 @@ use the shopify_* tools.`,
 
   // Utility tools
   registerImageTools(server);            // compress_images: download, compress to JPEG, return base64
+  registerIngestTools(server);           // analyze_images: Drive folder → vision analysis + thumbnails
 
   // Prompts (pre-built workflows)
   registerPrompts(server);

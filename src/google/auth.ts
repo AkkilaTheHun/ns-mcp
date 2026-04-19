@@ -4,7 +4,7 @@ import { BetaAnalyticsDataClient } from "@google-analytics/data";
 let cachedAuth: GoogleAuth | undefined;
 let cachedAnalyticsClient: BetaAnalyticsDataClient | undefined;
 
-function getServiceAccountKey(): Record<string, string> {
+export function getServiceAccountKey(): Record<string, string> {
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
   if (!raw) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY env var not set");
   return JSON.parse(raw) as Record<string, string>;
