@@ -32,7 +32,7 @@ Set format to "vision_content_block" to get results pre-wrapped as Claude vision
       urls: z.array(z.string().url()).min(1).describe("Public HTTPS image URLs to download and compress"),
       quality: z.number().min(1).max(100).default(80).optional().describe("JPEG quality 1-100 (default 80)"),
       maxWidth: z.number().optional().describe("Max width in px — images wider than this are resized proportionally"),
-      format: z.enum(["default", "vision_content_block"]).default("default").optional().describe("Output format — 'vision_content_block' wraps each image as a ready-to-use Claude vision content block"),
+      format: z.enum(["default", "vision_content_block"]).default("vision_content_block").optional().describe("Output format — 'default' returns raw base64 for uploading/processing, 'vision_content_block' (default) wraps each image as a ready-to-use Claude vision content block"),
     },
     async ({ urls, quality, maxWidth, format }) => {
       const jpegQuality = quality ?? 80;
