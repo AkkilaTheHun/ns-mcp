@@ -551,7 +551,7 @@ export function registerProductTools(server: McpServer): void {
   // --- Add Media to Product ---
   server.tool(
     "add_product_media",
-    "Add images or other media to a product from URLs using productSet.",
+    "Add images or other media to a product from URLs using productCreateMedia.",
     {
       productId: z.string().describe("Product GID"),
       media: z.array(z.object({
@@ -562,35 +562,31 @@ export function registerProductTools(server: McpServer): void {
     },
     async ({ productId, media }) => {
       const res = await shopifyGraphQL<{
-        productSet: {
+        productCreateMedia: {
           product: unknown;
-          userErrors: Array<{ field: string[]; message: string }>;
+          media: unknown;
+          mediaUserErrors: Array<{ field: string[]; message: string }>;
         };
       }>(`
-        mutation ProductSet($synchronous: Boolean!, $input: ProductSetInput!) {
-          productSet(synchronous: $synchronous, input: $input) {
-            product {
-              id
-              title
-              media(first: 20) {
-                edges {
-                  node {
-                    ... on MediaImage {
-                      id
-                      image { url altText }
-                      status
-                    }
-                  }
-                }
+        mutation productCreateMedia($media: [CreateMediaInput!]!, $productId: ID!) {
+          productCreateMedia(media: $media, productId: $productId) {
+            media {
+              alt
+              mediaContentType
+              status
+              ... on MediaImage {
+                id
+                image { url altText }
               }
             }
-            userErrors { field message }
+            mediaUserErrors { field message }
+            product { id title }
           }
         }
-      `, { synchronous: true, input: { id: productId, media } });
+      `, { media, productId });
 
-      throwIfUserErrors(res.data?.productSet?.userErrors, "productSet");
-      return { content: [{ type: "text" as const, text: toText(res.data?.productSet?.product) }] };
+      throwIfUserErrors(res.data?.productCreateMedia?.mediaUserErrors, "productCreateMedia");
+      return { content: [{ type: "text" as const, text: toText(res.data?.productCreateMedia) }] };
     },
   );
 }

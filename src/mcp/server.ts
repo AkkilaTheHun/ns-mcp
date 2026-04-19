@@ -21,6 +21,7 @@ import {
   registerMetaobjectGateway,
 } from "./gateway2.js";
 import { registerAnalyticsGateway, registerSearchConsoleGateway, registerIndexingGateway, registerTagManagerGateway } from "./gateway-google.js";
+import { registerImageTools } from "./tools/images.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -141,6 +142,9 @@ use the shopify_* tools.`,
   registerSearchConsoleGateway(server);  // GSC: list_sites, query, inspect_url, list_sitemaps
   registerIndexingGateway(server);       // Indexing: notify_updated, notify_removed, get_status, batch_update
   registerTagManagerGateway(server);     // GTM: tags, triggers, variables, versioning, publishing
+
+  // Utility tools
+  registerImageTools(server);            // compress_images: download, compress to JPEG, return base64
 
   // Prompts (pre-built workflows)
   registerPrompts(server);

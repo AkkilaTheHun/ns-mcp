@@ -89,18 +89,19 @@ export function registerTranslationGateway(server: McpServer): void {
     `Manage translations for products, collections, pages, and other translatable resources. Supports market-scoped overrides. Actions:
 - list_locales: List shop's enabled locales
 - list_translatable: List translatable resources of a type (params: resourceType, first?, after?)
-- get: Get translations for a resource (params: resourceId, locale, marketId?) — pass marketId to get market-specific overrides
-- register: Register translations (params: resourceId, translations[{locale, key, value, translatableContentDigest, marketId?}]) — include marketId in EACH translation object for market-scoped overrides
+- get: Get translatable content + existing translations for a resource (params: resourceId, locale?, marketId?) — returns translatableContent array with digests, plus any existing translations. locale defaults to "en". Returns empty array if resource has no translatable content yet.
+- register: Register translations (params: resourceId, translations[{locale, key, value, translatableContentDigest?, marketId?}]) — digest is OPTIONAL: if omitted, auto-fetched from the resource. Include marketId in EACH translation object for market-scoped overrides.
 - remove: Remove translations (params: resourceId, locales[], keys[], marketId?) — pass top-level marketId to remove market-specific overrides
 
-To register a market-scoped translation: translations: [{locale: "en", key: "title", value: "US Title", translatableContentDigest: "abc123", marketId: "gid://shopify/Market/123"}]
+Example — register US market override (digest auto-fetched):
+  { action: "register", resourceId: "gid://shopify/Product/123", translations: [{ locale: "en", key: "title", value: "US Title", marketId: "gid://shopify/Market/456" }] }
 
 resourceType examples: PRODUCT, COLLECTION, ONLINE_STORE_PAGE, ONLINE_STORE_ARTICLE, METAOBJECT, MENU, LINK`,
     {
       action: z.enum(["list_locales", "list_translatable", "get", "register", "remove"]),
       resourceType: z.string().optional().describe("e.g. PRODUCT, COLLECTION, ONLINE_STORE_PAGE"),
       resourceId: z.string().optional().describe("Resource GID to translate"),
-      locale: z.string().optional().describe("Locale code (e.g. fr, es, de, en)"),
+      locale: z.string().optional().describe("Locale code (e.g. fr, es, de, en). Defaults to 'en' for get."),
       locales: z.array(z.string()).optional(),
       keys: z.array(z.string()).optional(),
       marketId: z.string().optional().describe("Market GID for market-scoped overrides (e.g. gid://shopify/Market/123)"),
@@ -108,7 +109,7 @@ resourceType examples: PRODUCT, COLLECTION, ONLINE_STORE_PAGE, ONLINE_STORE_ARTI
         locale: z.string(),
         key: z.string(),
         value: z.string(),
-        translatableContentDigest: z.string(),
+        translatableContentDigest: z.string().optional().describe("Digest hash — if omitted, auto-fetched from the resource"),
         marketId: z.string().optional().describe("Market GID for market-scoped override"),
       })).optional(),
       first: z.number().optional(),
@@ -127,16 +128,38 @@ resourceType examples: PRODUCT, COLLECTION, ONLINE_STORE_PAGE, ONLINE_STORE_ARTI
           return text(res.data);
         }
         case "get": {
-          if (!p.resourceId || !p.locale) return fail("resourceId and locale required");
-          const res = await gql(`query($resourceId:ID!,$locale:String!,$marketId:ID){translatableResource(resourceId:$resourceId){resourceId translatableContent{key value digest locale} translations(locale:$locale,marketId:$marketId){key value locale outdated market{id}}}}`,
-            { resourceId: p.resourceId, locale: p.locale, marketId: p.marketId });
-          return text(res.data);
+          if (!p.resourceId) return fail("resourceId required");
+          const locale = p.locale ?? "en";
+          const res = await gql<{ translatableResource: { resourceId: string; translatableContent: unknown[]; translations: unknown[] } | null }>(`query($resourceId:ID!,$locale:String!,$marketId:ID){translatableResource(resourceId:$resourceId){resourceId translatableContent{key value digest locale} translations(locale:$locale,marketId:$marketId){key value locale outdated market{id}}}}`,
+            { resourceId: p.resourceId, locale, marketId: p.marketId });
+          const resource = res.data?.translatableResource;
+          if (!resource) return text({ resourceId: p.resourceId, translatableContent: [], translations: [], note: "No translatable content found for this resource" });
+          return text(resource);
         }
         case "register": {
-          if (!p.resourceId || !p.translations) return fail("resourceId and translations required");
+          if (!p.resourceId || !p.translations?.length) return fail("resourceId and translations required");
+          // Auto-fetch digests for any translations missing them
+          const needsDigest = p.translations.some(t => !t.translatableContentDigest);
+          let digestMap: Map<string, string> | undefined;
+          if (needsDigest) {
+            const contentRes = await gql<{ translatableResource: { translatableContent: Array<{ key: string; digest: string }> } | null }>(
+              `query($resourceId:ID!){translatableResource(resourceId:$resourceId){translatableContent{key digest}}}`,
+              { resourceId: p.resourceId });
+            const content = contentRes.data?.translatableResource?.translatableContent;
+            if (!content) return fail("Could not fetch translatable content — resource may not exist or have no translatable fields");
+            digestMap = new Map(content.map(c => [c.key, c.digest]));
+          }
+          const translations = p.translations.map(t => {
+            let digest = t.translatableContentDigest;
+            if (!digest) {
+              digest = digestMap!.get(t.key);
+              if (!digest) throw new Error(`Key "${t.key}" is not translatable on this resource. Available keys: ${[...digestMap!.keys()].join(", ")}`);
+            }
+            return { locale: t.locale, key: t.key, value: t.value, translatableContentDigest: digest, ...(t.marketId ? { marketId: t.marketId } : {}) };
+          });
           const res = await gql<{ translationsRegister: { translations: unknown[]; userErrors: Array<{ field: string[]; message: string }> } }>(
             `mutation($resourceId:ID!,$translations:[TranslationInput!]!){translationsRegister(resourceId:$resourceId,translations:$translations){translations{key value locale market{id}}userErrors{field message}}}`,
-            { resourceId: p.resourceId, translations: p.translations });
+            { resourceId: p.resourceId, translations });
           checkErrors(res.data?.translationsRegister?.userErrors, "translationsRegister");
           return text(res.data?.translationsRegister?.translations);
         }
