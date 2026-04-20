@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import sharp from "sharp";
-import { listFolderImages, downloadFile, getFolderMeta, type DriveFile } from "../../google/drive.js";
+import { listFolderImages, downloadFile, getFolderMeta, discoverProductImages, listSubfolders, type DriveFile } from "../../google/drive.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
 import { getCurrentSessionId } from "../../context.js";
 import { getSessionShop } from "../../session.js";
@@ -285,9 +285,28 @@ to the user for approval, then calls create_product to execute.`,
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
     },
-    async ({ folderId, vendor, title, stockType, preorderDates, priceOverride, vendorHint, maxImages }) => {
+    async ({ folderId, vendor, title, stockType, preorderDates, priceOverride, vendorHint, maxImages }, extra) => {
       const startTime = Date.now();
       const warnings: string[] = [];
+      const progress: string[] = [];
+
+      // Progress helper — sends MCP notification if client supports it, always logs
+      const progressToken = extra?._meta?.progressToken;
+      let progressStep = 0;
+      const totalSteps = 10; // approximate
+      async function reportProgress(message: string) {
+        progressStep++;
+        progress.push(message);
+        console.log(`[ingest] ${message}`);
+        if (progressToken && extra?.sendNotification) {
+          try {
+            await extra.sendNotification({
+              method: "notifications/progress" as const,
+              params: { progressToken, progress: progressStep, total: totalSteps, message },
+            });
+          } catch { /* client may not support progress */ }
+        }
+      }
 
       // Validate preorder dates
       if (stockType === "preorder" && !preorderDates) {
@@ -309,15 +328,13 @@ to the user for approval, then calls create_product to execute.`,
         };
       }
 
-      console.log(`[ingest] Starting preflight: "${title}" by ${vendor} (${stockType}) — folder "${folderName}"`);
+      await reportProgress(`Starting preflight: "${title}" by ${vendor} (${stockType})`);
 
       // Resolve shop domain for Shopify queries.
-      // Must happen before the parallel block — all preflight helpers need it.
       let shop: string | undefined;
       const sessionId = getCurrentSessionId();
       if (sessionId) shop = getSessionShop(sessionId);
       if (!shop) {
-        // Fall back to default shop if only one is configured
         const shopDomains = [...config.shops.keys()];
         if (shopDomains.length === 1) {
           shop = shopDomains[0];
@@ -331,11 +348,85 @@ to the user for approval, then calls create_product to execute.`,
           isError: true,
         };
       }
-      console.log(`[ingest] Using shop: ${shop}`);
 
       // ---------------------------------------------------------------
-      // Run ALL operations in parallel
+      // Discover images — handles flat folders and collection structures
       // ---------------------------------------------------------------
+      await reportProgress(`Scanning folder "${folderName}" for images...`);
+
+      let productFiles: DriveFile[] = [];
+      let folderStructure = "flat";
+
+      // Check for subfolders first
+      const subfolders = await listSubfolders(folderId);
+
+      if (subfolders.length === 0) {
+        // Flat folder — all images are direct children (single product)
+        productFiles = await listFolderImages(folderId);
+        folderStructure = "flat";
+        await reportProgress(`Flat folder: found ${productFiles.length} images`);
+      } else {
+        // Has subfolders — collection structure. Traverse and find images for this product.
+        folderStructure = "collection";
+        await reportProgress(`Collection folder: ${subfolders.length} subfolder(s) found. Searching for "${title}" images...`);
+
+        const titleLower = title.toLowerCase().trim();
+
+        for (const sub of subfolders) {
+          // Check if subfolder has its own subfolders (per-product folders like Suzie/Blazing Evening Sky/)
+          const subSubs = await listSubfolders(sub.id);
+
+          if (subSubs.length > 0) {
+            // Look for a subfolder matching the product title
+            const match = subSubs.find((ss) =>
+              ss.name.toLowerCase().trim() === titleLower ||
+              ss.name.toLowerCase().trim().includes(titleLower) ||
+              titleLower.includes(ss.name.toLowerCase().trim()),
+            );
+            if (match) {
+              const imgs = await listFolderImages(match.id);
+              productFiles.push(...imgs);
+            }
+          } else {
+            // Flat swatcher folder — match by filename prefix
+            const imgs = await listFolderImages(sub.id);
+            for (const img of imgs) {
+              const base = img.name.replace(/\.[^.]+$/, "")
+                .replace(/[\s_-]+\d+\s*$/, "")
+                .trim()
+                .toLowerCase();
+              if (base === titleLower || base.includes(titleLower) || titleLower.includes(base)) {
+                productFiles.push(img);
+              }
+            }
+          }
+        }
+
+        // Also grab direct images from the top-level folder (collection shots)
+        const directImages = await listFolderImages(folderId);
+        // Only include collection-level images if they seem related to this product
+        // (usually they're group shots — skip them for individual product ingestion)
+        if (productFiles.length === 0 && directImages.length > 0) {
+          // Fallback: if no product-specific images found in subfolders, use direct images
+          productFiles = directImages;
+          warnings.push(`No images matching "${title}" found in subfolders. Using ${directImages.length} top-level image(s) as fallback.`);
+        }
+
+        await reportProgress(`Found ${productFiles.length} images for "${title}" across ${subfolders.length} subfolder(s)`);
+      }
+
+      if (productFiles.length === 0) {
+        return {
+          content: [{ type: "text" as const, text: `No images found for "${title}" in folder "${folderName}" (${folderId}). Checked ${subfolders.length} subfolder(s).` }],
+          isError: true,
+        };
+      }
+
+      // ---------------------------------------------------------------
+      // Run image analysis + Shopify preflight in parallel
+      // ---------------------------------------------------------------
+      await reportProgress(`Analyzing ${productFiles.length} images + running Shopify preflight...`);
+
       const [
         imageResult,
         skuResult,
@@ -347,19 +438,18 @@ to the user for approval, then calls create_product to execute.`,
         finishesResult,
         polishTypesResult,
       ] = await Promise.allSettled([
-        // 1. Image analysis (reuses existing pipeline)
+        // 1. Image analysis
         (async () => {
-          const allFiles = await listFolderImages(folderId);
-          if (allFiles.length === 0) return { images: [], errors: [], lowConfidence: [] };
-
           const cap = maxImages ?? 50;
           const context = { productName: title, brand: vendor, vendorHint };
           const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
 
-          const processed = await mapConcurrent(allFiles, concurrency, async (file, i) => {
-            console.log(`[ingest] Image ${i + 1}/${allFiles.length}: ${file.name}`);
+          const processed = await mapConcurrent(productFiles, concurrency, async (file, i) => {
+            console.log(`[ingest] Image ${i + 1}/${productFiles.length}: ${file.name}`);
             return processImage(file, context);
           });
+
+          await reportProgress(`Image analysis complete: ${processed.filter((p) => p.result).length} succeeded`);
 
           const images: AnalyzedImage[] = [];
           const errors: Array<{ fileId: string; filename: string; error: string }> = [];
@@ -461,11 +551,12 @@ to the user for approval, then calls create_product to execute.`,
       const taxonomy = TAXONOMY_MAP["nail_polish"];
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`[ingest] Preflight complete: ${imageData.images.length} images, ${elapsed}s elapsed`);
+      await reportProgress(`Preflight complete: ${imageData.images.length} images analyzed in ${elapsed}s`);
 
       const result = {
         folderId,
         folderName,
+        folderStructure,
         title,
         vendor,
         stockType,
@@ -504,6 +595,7 @@ to the user for approval, then calls create_product to execute.`,
         pricing,
         taxonomy,
         processingTimeSeconds: Number(elapsed),
+        progress,
         warnings,
       };
 
