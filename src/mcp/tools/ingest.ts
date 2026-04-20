@@ -60,18 +60,6 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
-/** Convert raw image bytes to a baseline JPEG buffer. Handles HEIC, PNG, WebP, AVIF, etc. */
-async function toJpegBuffer(raw: Buffer): Promise<Buffer> {
-  // Sharp auto-detects format including HEIC/HEIF.
-  // Convert to a full-size JPEG first, then derive smaller sizes from that.
-  // This avoids decoding HEIC twice and works around platforms where
-  // HEIC decoding is flaky but JPEG is always solid.
-  return sharp(raw, { failOn: "none" })
-    .rotate() // auto-orient from EXIF
-    .jpeg({ quality: 90, mozjpeg: true })
-    .toBuffer();
-}
-
 /** Download, compress, analyze a single image. */
 async function processImage(
   file: DriveFile,
@@ -83,16 +71,16 @@ async function processImage(
     // Download from Drive
     const raw = await downloadFile(file.id);
 
-    // Convert to JPEG once (handles HEIC, PNG, WebP, AVIF, etc.)
-    const jpegFull = await toJpegBuffer(raw);
-
-    // Derive analysis-size and thumbnail from the JPEG (no re-decoding of HEIC)
-    const analysisBuffer = await sharp(jpegFull)
+    // Go straight from raw → 900px JPEG. Handles HEIC, PNG, WebP, AVIF, etc.
+    // No intermediate full-resolution JPEG — 900px is the largest size we need.
+    const analysisBuffer = await sharp(raw, { failOn: "none" })
+      .rotate()
       .resize({ width: 900, withoutEnlargement: true })
       .jpeg({ quality: 75, mozjpeg: true })
       .toBuffer();
 
-    const thumbBuffer = await sharp(jpegFull)
+    // Thumbnail derived from the 900px buffer (already decoded, fast resize)
+    const thumbBuffer = await sharp(analysisBuffer)
       .resize({ width: thumbnailWidth, withoutEnlargement: true })
       .jpeg({ quality: jpegQuality, mozjpeg: true })
       .toBuffer();
@@ -185,9 +173,9 @@ folder are processed (prevents cross-product image mixups).`,
       const cap = maxImages ?? 50;
       const context = { productName, brand, vendorHint };
 
-      // Process ALL images with progress reporting
+      // Process ALL images with progress reporting (10 concurrent — bottleneck is Gemini latency, not CPU)
       let completed = 0;
-      const processed = await mapConcurrent(allFiles, 5, async (file) => {
+      const processed = await mapConcurrent(allFiles, 10, async (file) => {
         const result = await processImage(file, context, 100, 50);
         completed++;
         await reportProgress(completed, allFiles.length, `Analyzed ${completed}/${allFiles.length}: ${file.name}`);
