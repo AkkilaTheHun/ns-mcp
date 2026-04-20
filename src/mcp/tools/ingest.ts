@@ -8,7 +8,7 @@ import {
   checkDuplicates,
   getConfigReference,
   getStyleReference,
-  lookupMetaobject,
+  findBrandMetaobject,
   listMetaobjectEntries,
   TAXONOMY_MAP,
 } from "../../shopify/preflight.js";
@@ -308,9 +308,6 @@ to the user for approval, then calls create_product to execute.`,
 
       console.log(`[ingest] Starting preflight: "${title}" by ${vendor} (${stockType}) — folder "${folderName}"`);
 
-      // Derive brand handle for metaobject lookup (kebab-case)
-      const brandHandle = vendor.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-
       // ---------------------------------------------------------------
       // Run ALL operations in parallel
       // ---------------------------------------------------------------
@@ -381,7 +378,7 @@ to the user for approval, then calls create_product to execute.`,
         getStyleReference(5),
 
         // 6. Brand metaobject
-        lookupMetaobject("brand", brandHandle),
+        findBrandMetaobject(vendor),
 
         // 7. Color metaobjects
         listMetaobjectEntries("color"),
@@ -424,7 +421,7 @@ to the user for approval, then calls create_product to execute.`,
 
       // Brand warning
       if (!brand) {
-        warnings.push(`Brand metaobject not found for handle "${brandHandle}". Verify brand exists or try a different handle.`);
+        warnings.push(`Brand metaobject not found for vendor "${vendor}". Check that a brand metaobject exists with a matching display name.`);
       }
 
       // Image warnings

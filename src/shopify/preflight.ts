@@ -264,19 +264,31 @@ export async function getStyleReference(count = 5): Promise<StyleReference[]> {
 // Metaobject Lookups
 // ---------------------------------------------------------------------------
 
-export async function lookupMetaobject(
-  type: string,
-  handle: string,
-): Promise<{ id: string; displayName: string } | null> {
-  const res = await shopifyGraphQL<{
-    metaobjectByHandle: { id: string; displayName: string } | null;
-  }>(
-    `query($handle: MetaobjectHandleInput!) {
-      metaobjectByHandle(handle: $handle) { id displayName }
-    }`,
-    { handle: { handle, type } },
+/**
+ * Find a metaobject by displayName (case-insensitive).
+ * Falls back to handle lookup if displayName match fails.
+ * This is more robust than guessing handles from vendor names.
+ */
+export async function findBrandMetaobject(
+  vendor: string,
+): Promise<{ id: string; displayName: string; handle: string } | null> {
+  // List all brand metaobjects (typically < 20) and match by displayName
+  const entries = await listMetaobjectEntries("brand");
+  const vendorLower = vendor.toLowerCase().trim();
+
+  // Try exact displayName match first
+  const exact = entries.find((e) => e.displayName.toLowerCase().trim() === vendorLower);
+  if (exact) return { id: exact.id, displayName: exact.displayName, handle: exact.handle };
+
+  // Try partial/contains match
+  const partial = entries.find(
+    (e) =>
+      e.displayName.toLowerCase().includes(vendorLower) ||
+      vendorLower.includes(e.displayName.toLowerCase()),
   );
-  return res.data?.metaobjectByHandle ?? null;
+  if (partial) return { id: partial.id, displayName: partial.displayName, handle: partial.handle };
+
+  return null;
 }
 
 export async function listMetaobjectEntries(type: string): Promise<MetaobjectEntry[]> {

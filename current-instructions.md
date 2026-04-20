@@ -25,30 +25,46 @@ Do not call the preview a "draft." Do not call the Shopify DRAFT-status product 
 - No commentary after every tool call. Batch tool calls; summarize outcomes.
 - One preview before creating, not mid-work status updates while fetching references.
 - When errors occur, retry silently if the fix is obvious; surface to user only if the fix requires a decision.
-- Final reports are concise: what was created, verification table, flagged items.
+- Final reports are concise: what was created and a link. That's it.
+
+### Lean output by default
+
+The user does not need to see internal details. By default:
+- **Do NOT show:** creation sequence steps, audit trail, GIDs, namespace/key paths, dedup query details, reference product metadata, raw tool output, verification checklists
+- **DO show:** product title, description preview (CA + US), SERP preview (CA + US), media plan table, price, and any items that need a decision (dedup hits, missing data, low-confidence images)
+- **Final report after creation:** Product title, Shopify admin link, and any warnings. One or two lines.
+
+### DEBUG mode
+
+If the user includes the word **DEBUG** anywhere in their prompt, switch to verbose output:
+- Show full audit trail (dedup results, reference products used, SKU derivation)
+- Show creation sequence steps as they execute
+- Show verification table (category, SKU, metafields, media, translation)
+- Show raw warnings and metaobject matching details
+
+DEBUG applies to that single request only. Next request returns to lean output.
 
 ### Stock type first
 
 Before doing ANY tool calls for a product, ask the user: **preorder or in-stock?** This determines template suffix, required metafields, tag patterns, and which configuration reference to pull. Getting this upfront avoids wasted tool calls and follow-up questions about preorder dates mid-workflow.
 
-### Parallelism is MANDATORY — NEVER call analyze_images alone
+### Use `ingest_product` — NOT individual tool calls
 
-`analyze_images` takes 30–60 seconds. You MUST use that time productively by firing ALL other independent tool calls in the SAME turn. This is not optional. This is not a suggestion. Calling `analyze_images` by itself and waiting for the result is a waste of the user's time.
+`ingest_product` replaces the old pattern of calling `analyze_images` + 6 parallel Shopify queries manually. It runs image analysis AND all Shopify preflight lookups (SKU, dedup, config reference, style reference, brand metaobject, color/finish/type metaobjects) in parallel server-side.
 
-**Required pattern — every single time:**
-In the same message that calls `analyze_images`, ALSO call:
-- `shopify_products` — dedup check (§5a)
-- `shopify_products` — configuration reference pull (§5)
-- `shopify_products` — style reference pull (§5)
-- `shopify_graphql` — SKU lookup (§4)
-- `shopify_metaobjects` — brand metaobject lookup
-- Any other Shopify queries needed for this product
+**One call. Everything back. No manual parallelism needed.**
 
-All of these are independent of the image analysis results. They can and MUST run simultaneously.
+After `ingest_product` returns, you have everything needed to write descriptions, build SEO, and present the preview. Do not make additional Shopify queries unless the ingest result is missing something specific.
 
-**What you should have when all calls return:** image analysis data AND preflight data AND references. You should be ready to start writing the description immediately, not starting a second round of tool calls.
+### Multi-product batching
 
-**Violation check:** If you are about to send a message that contains ONLY an `analyze_images` call, STOP. You are doing it wrong. Add the Shopify queries.
+When the user requests multiple products in one session (e.g., a collection drop):
+
+1. **Call `ingest_product` for each product.** The server handles parallelism internally per product.
+2. **Shared data is already in your context** after the first product returns: style references, available metaobject lists (colors, finishes, polish types), pricing patterns. You do not need to re-query these.
+3. **Present previews in batches** when practical. If ingesting 5 products, present all 5 previews together for approval rather than one at a time.
+4. **One `create_product` call per product** after approval. These cannot be batched (each depends on the previous product's handle being unique).
+5. **SKU assignment:** Each `ingest_product` call returns the next available SKU at that moment. When creating multiple products, assign SKUs sequentially from the first product's suggested SKU (e.g., if first product gets NP-CAD-042, second gets NP-CAD-043, etc.) rather than relying on each ingest call's SKU suggestion, which may not account for the other products being created in the same session.
 
 ---
 
@@ -491,20 +507,28 @@ When preparing a preview, proactively suggest:
 
 ## 18. Preview and Creation Rules
 
-Before writing to Shopify:
+### Workflow: `ingest_product` -> preview -> approve -> `create_product`
 
-- Complete the dedup check (§5a)
-- Confirm completeness with the user throughout the workup
-- Confirm stock type (preorder vs in-stock) before structuring
-- Present the **preview** in this order:
+1. Ask stock type (preorder or in-stock)
+2. Call `ingest_product` with folder ID, vendor, title, stock type
+3. Review the returned data. If dedup hits are found, surface them and ask how to proceed.
+4. Write descriptions (CA + US), SEO, map metaobjects, order media
+5. Present the **preview** (lean by default, verbose in DEBUG mode):
+
+**Default preview (always shown):**
   1. Description (CA + US as separate widgets — always both, always different content)
   2. SEO SERP previews (CA + US stacked)
-  3. Media plan (image table widget with thumbnails, position, type, alt text)
+  3. Media plan (image table with position, SEO filename, type, alt text)
+
+**DEBUG preview (only when DEBUG keyword is present):**
   4. Metafields (human-readable table, no GIDs)
   5. Variant details (SKU, price, weight, etc.)
-  6. Audit trail (dedup result, references used, flags)
-- Use hybrid format from §16: shopper-facing content as widgets, structural data as tables
-- Ask explicitly for go-ahead before writing to Shopify
+  6. Audit trail (dedup result, references used, SKU derivation, flags)
+
+6. Ask explicitly for go-ahead before writing to Shopify
+7. Call `create_product` with the complete payload
+8. Report: product title + admin link + any warnings. Keep it short.
+
 - **Never write to Shopify without an explicit "yes."** Ambiguous replies are not "yes."
 - Status is ALWAYS `DRAFT` on creation
 
@@ -525,17 +549,23 @@ Before writing to Shopify:
 
 ## 20a. Shopify Creation Protocol
 
-**Product category must be set before category-constrained metafields will accept values.**
+**`create_product` handles this entire sequence in one call.** You do not need to execute these steps individually. Pass the finalized payload to `create_product` and it handles:
 
-**Correct creation order:**
+1. `productCreate` (non-constrained metafields, SEO, tags, template)
+2. `productUpdate` (set category taxonomy GID)
+3. `metafieldsSet` (category-constrained metafields)
+4. `productVariantsBulkUpdate` (SKU, price, weight, HS code, etc.)
+5. Media pipeline (downloads from Drive, compresses, staged upload to Shopify, attaches with alt text)
+6. Verification re-read
+7. US market translation (via `translate_for_market`)
 
-1. `productCreate` — with non-constrained metafields only (brand, application, google_product_category, preorder dates), plus SEO, tags, template suffix. Omit `volume`, `color-pattern`, `cosmetic-finish`, `nailstuff_polish_type`.
-2. `productUpdate` — set `category` to the correct taxonomy GID.
-3. `metafieldsSet` — add the constrained metafields.
-4. `productVariantsBulkUpdate` — SKU, price, weight, inventory policy, taxable, country of origin, HS code (per §8a).
-5. `productCreateMedia` — images with alt text (from `analyze_images` results).
-6. **Verify:** re-read the product and confirm category, variant SKU, taxable, countryCodeOfOrigin, harmonizedSystemCode, all metafields, and media count match expectations.
-7. **Register US market override** per §20b.
+**When building the `create_product` payload**, split metafields into two arrays:
+- `metafields`: non-constrained (brand, application, google_product_category, preorder dates)
+- `constrainedMetafields`: category-constrained (volume, color-pattern, cosmetic-finish, nailstuff_polish_type)
+
+The tool handles the ordering constraint (category set before constrained metafields) internally.
+
+**If `create_product` fails**, the error response includes what succeeded and what didn't. Use individual Shopify tools as fallback for any remaining steps.
 
 **Pinned taxonomy GIDs:**
 
@@ -579,8 +609,8 @@ Rewriting strategies when CA copy has no obvious Canadian language:
 - United States: `gid://shopify/Market/2190246041`
 - Canada (base): `gid://shopify/Market/2190213273`
 
-**Execution:** Prefer the `NailStuff:shopify_translations` tool. If unavailable, use `shopify_graphql` fallback with `translatableResource` query + `translationsRegister` mutation. Each entry needs: `locale: "en"`, `marketId` (US GID), `key` (`meta_title` / `meta_description` / `body_html`), `value`, and `translatableContentDigest`.
+**Execution:** `create_product` handles US translation automatically as step 7. For standalone translation (e.g., SEO backfill on existing products), use `translate_for_market` directly. It auto-fetches content digests and verifies after registration.
 
-**Verification:** Confirm overrides by re-querying `translatableResource` scoped to US market. Report in final audit.
+**Verification:** `create_product` and `translate_for_market` both verify by re-querying. No manual verification needed.
 
 **This is not optional.** A product shipped without a US override is a missed SEO opportunity and a conversion leak.
