@@ -1,8 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import sharp from "sharp";
+// @ts-expect-error — heic-convert has no type declarations
+import heicConvert from "heic-convert";
 import { listFolderImages, downloadFile, getFolderMeta, type DriveFile } from "../../google/drive.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
+
+const HEIC_MIMETYPES = new Set(["image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"]);
 
 interface AnalyzedImage {
   fileId: string;
@@ -68,11 +72,20 @@ async function processImage(
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Download from Drive
-    const raw = await downloadFile(file.id);
+    let raw = await downloadFile(file.id);
     const rawSizeKB = Math.round(raw.length / 1024);
-    console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB)`);
+    console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
-    // Go straight from raw → 900px JPEG. Handles HEIC, PNG, WebP, AVIF, etc.
+    // Convert HEIC/HEIF to JPEG before Sharp — node:22-slim lacks libheif
+    const isHeic = HEIC_MIMETYPES.has(file.mimeType) || /\.heic$/i.test(file.name);
+    if (isHeic) {
+      console.log(`[analyze] Converting HEIC → JPEG: ${file.name}`);
+      const converted = await heicConvert({ buffer: raw, format: "JPEG", quality: 0.9 });
+      raw = Buffer.from(converted);
+      console.log(`[analyze] HEIC converted: ${rawSizeKB} KB → ${Math.round(raw.length / 1024)} KB`);
+    }
+
+    // Resize to 900px JPEG for analysis
     const analysisBuffer = await sharp(raw, { failOn: "none" })
       .rotate()
       .resize({ width: 900, withoutEnlargement: true })
