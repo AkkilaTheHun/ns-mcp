@@ -194,7 +194,7 @@ folder are processed (prevents cross-product image mixups).`,
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(allFiles, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${allFiles.length}: ${file.name}`);
-        return processImage(file, context, 100, 50);
+        return processImage(file, context, 150, 55);
       });
 
       const results: AnalyzedImage[] = [];
@@ -255,6 +255,7 @@ folder are processed (prevents cross-product image mixups).`,
           observedEffects: r.analysis.observedEffects,
           altText: r.analysis.altText,
           confidence: r.analysis.confidence,
+          thumbnailDataUrl: `data:image/jpeg;base64,${r.thumbnailBase64}`,
         })),
         ...(skippedAfterCap > 0 ? { skippedAfterCap } : {}),
         ...(lowConfidence.length > 0 ? { lowConfidence } : {}),
