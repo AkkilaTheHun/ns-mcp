@@ -187,11 +187,12 @@ folder are processed (prevents cross-product image mixups).`,
       const cap = maxImages ?? 50;
       const context = { productName, brand, vendorHint };
 
-      // Process images ONE AT A TIME to stay within 512MB RAM.
-      // Each image: download (up to 20MB) + Sharp decode/compress + Gemini API call.
-      // Sequential processing keeps peak memory under 150MB.
-      // The bottleneck is Gemini API latency (~3-5s per image), not CPU.
-      const processed = await mapConcurrent(allFiles, 1, async (file, i) => {
+      // Concurrency tuned for deployment environment:
+      // - Render Starter (512MB): use 1
+      // - Home server (8GB+): use 8-10
+      // Bottleneck is Gemini API latency (~10s/image), not CPU/RAM.
+      const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
+      const processed = await mapConcurrent(allFiles, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${allFiles.length}: ${file.name}`);
         return processImage(file, context, 100, 50);
       });

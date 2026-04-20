@@ -24,3 +24,5 @@ services:
           property: host
       - key: PORT
         value: "3000"
+      - key: IMAGE_CONCURRENCY
+        value: "1"
