@@ -22,7 +22,6 @@ function toSeoFilename(brand: string, productName: string, imageType: string, po
       .replace(/[^a-z0-9]+/g, "-")    // non-alphanumeric → hyphen
       .replace(/^-+|-+$/g, "");       // trim leading/trailing hyphens
 
-  // Map internal image types to SEO-friendly suffixes
   const typeSuffix: Record<string, string> = {
     bottle_in_hand: "bottle",
     bottle_standalone: "bottle",
@@ -44,7 +43,7 @@ function toSeoFilename(brand: string, productName: string, imageType: string, po
 async function mapConcurrent<T, R>(
   items: T[],
   concurrency: number,
-  fn: (item: T) => Promise<R>,
+  fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let idx = 0;
@@ -52,7 +51,7 @@ async function mapConcurrent<T, R>(
   async function worker() {
     while (idx < items.length) {
       const i = idx++;
-      results[i] = await fn(items[i]);
+      results[i] = await fn(items[i], i);
     }
   }
 
@@ -70,9 +69,10 @@ async function processImage(
   try {
     // Download from Drive
     const raw = await downloadFile(file.id);
+    const rawSizeKB = Math.round(raw.length / 1024);
+    console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB)`);
 
     // Go straight from raw → 900px JPEG. Handles HEIC, PNG, WebP, AVIF, etc.
-    // No intermediate full-resolution JPEG — 900px is the largest size we need.
     const analysisBuffer = await sharp(raw, { failOn: "none" })
       .rotate()
       .resize({ width: 900, withoutEnlargement: true })
@@ -85,12 +85,16 @@ async function processImage(
       .jpeg({ quality: jpegQuality, mozjpeg: true })
       .toBuffer();
 
+    console.log(`[analyze] Compressed ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB analysis, ${Math.round(thumbBuffer.length / 1024)} KB thumb`);
+
     // Send to Gemini for analysis
     const analysis = await analyzeImage(
       analysisBuffer.toString("base64"),
       "image/jpeg",
       context,
     );
+
+    console.log(`[analyze] Vision done ${file.name}: ${analysis.imageType} (confidence: ${analysis.confidence})`);
 
     return {
       result: {
@@ -103,6 +107,7 @@ async function processImage(
       },
     };
   } catch (err) {
+    console.error(`[analyze] FAILED ${file.name}: ${err}`);
     return {
       error: { fileId: file.id, filename: file.name, error: String(err) },
     };
@@ -130,22 +135,8 @@ folder are processed (prevents cross-product image mixups).`,
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
       maxImages: z.number().optional().default(50).describe("Max images to successfully analyze (default 50). Errors don't count against this cap."),
     },
-    async ({ folderId, productName, brand, vendorHint, maxImages }, extra) => {
+    async ({ folderId, productName, brand, vendorHint, maxImages }) => {
       const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
-      const progressToken = extra?._meta?.progressToken;
-
-      /** Send a progress notification if the client supports it. */
-      const reportProgress = async (progress: number, total: number, message: string) => {
-        if (!progressToken || !extra?.sendNotification) return;
-        try {
-          await extra.sendNotification({
-            method: "notifications/progress" as const,
-            params: { progressToken, progress, total, message },
-          });
-        } catch {
-          // Client may not support progress — silently ignore
-        }
-      };
 
       // Get folder metadata
       let folderName: string;
@@ -168,18 +159,18 @@ folder are processed (prevents cross-product image mixups).`,
         };
       }
 
-      await reportProgress(0, allFiles.length, `Found ${allFiles.length} images in "${folderName}"`);
+      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName}`);
+      const startTime = Date.now();
 
       const cap = maxImages ?? 50;
       const context = { productName, brand, vendorHint };
 
-      // Process ALL images with progress reporting (10 concurrent — bottleneck is Gemini latency, not CPU)
-      let completed = 0;
-      const processed = await mapConcurrent(allFiles, 10, async (file) => {
-        const result = await processImage(file, context, 100, 50);
-        completed++;
-        await reportProgress(completed, allFiles.length, `Analyzed ${completed}/${allFiles.length}: ${file.name}`);
-        return result;
+      // Process images sequentially in batches of 3 to stay within 512MB RAM.
+      // Each image: download (up to 20MB) + Sharp decode + compress.
+      // 3 concurrent keeps peak memory around 150-200MB.
+      const processed = await mapConcurrent(allFiles, 3, async (file, i) => {
+        console.log(`[analyze] Processing ${i + 1}/${allFiles.length}: ${file.name}`);
+        return processImage(file, context, 100, 50);
       });
 
       const results: AnalyzedImage[] = [];
@@ -214,7 +205,8 @@ folder are processed (prevents cross-product image mixups).`,
         }
       }
 
-      await reportProgress(allFiles.length, allFiles.length, `Done — ${results.length} analyzed, ${errors.length} errors`);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[analyze] Complete: ${results.length} analyzed, ${errors.length} errors, ${elapsed}s elapsed`);
 
       // Build summary JSON (without thumbnail base64 — those go as image blocks)
       const summary = {
@@ -224,6 +216,7 @@ folder are processed (prevents cross-product image mixups).`,
         brand,
         totalImagesFound: allFiles.length,
         totalAnalyzed: results.length,
+        processingTimeSeconds: Number(elapsed),
         images: results.map((r) => ({
           fileId: r.fileId,
           filename: r.filename,
