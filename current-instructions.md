@@ -468,7 +468,7 @@ The media plan is presented as a **widget table** immediately after the product 
 **Format:** A table with columns: Position | Thumbnail | SEO Filename | Type | Alt Text
 
 - **Position**: numbered 1, 2, 3... — position 1 is the featured/hero image
-- **Thumbnail**: the 100px thumbnail from `analyze_images` results
+- **Thumbnail**: use the `thumbnailDataUrl` field from `analyze_images` results as `<img src="${image.thumbnailDataUrl}">` — these are base64 data URLs that render directly in widgets without any external requests
 - **SEO Filename**: the `proposedFilename` from `analyze_images` (e.g., `cadillacquer-lavender-sunset-bottle-1.jpg`). This replaces vendor filenames like `Foto 11.09.22.jpg` or `IMG_5498.JPG` at upload time for SEO value. Show original filename in parentheses only if notably different.
 - **Type**: human-readable image type (e.g., "Bottle in hand", "Swatch on nails", "Macro detail", "Lifestyle")
 - **Alt text**: the final alt text for that image

@@ -194,7 +194,7 @@ folder are processed (prevents cross-product image mixups).`,
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(allFiles, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${allFiles.length}: ${file.name}`);
-        return processImage(file, context, 150, 55);
+        return processImage(file, context, 50, 40);
       });
 
       const results: AnalyzedImage[] = [];
@@ -262,21 +262,8 @@ folder are processed (prevents cross-product image mixups).`,
         ...(errors.length > 0 ? { errors } : {}),
       };
 
-      // First block: structured analysis data
+      // Single JSON block with everything — thumbnails are in thumbnailDataUrl fields
       content.push({ type: "text", text: JSON.stringify(summary, null, 2) });
-
-      // Then: thumbnails as image blocks so Claude can see them
-      for (const r of results) {
-        content.push({
-          type: "text",
-          text: `\n--- ${r.proposedFilename} (was: ${r.filename}) | ${r.analysis.imageType}, confidence: ${r.analysis.confidence} ---`,
-        });
-        content.push({
-          type: "image",
-          data: r.thumbnailBase64,
-          mimeType: "image/jpeg",
-        });
-      }
 
       return { content };
     },
