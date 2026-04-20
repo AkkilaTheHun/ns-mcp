@@ -1,12 +1,22 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import sharp from "sharp";
-// @ts-expect-error — heic-convert has no type declarations
-import heicConvert from "heic-convert";
 import { listFolderImages, downloadFile, getFolderMeta, type DriveFile } from "../../google/drive.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
 
 const HEIC_MIMETYPES = new Set(["image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"]);
+
+/** Lazy-load heic-convert only when needed (saves ~20MB on module load). */
+let _heicConvert: ((opts: { buffer: Buffer; format: string; quality: number }) => Promise<ArrayBuffer>) | undefined;
+async function convertHeic(buffer: Buffer): Promise<Buffer> {
+  if (!_heicConvert) {
+    // @ts-expect-error — heic-convert has no type declarations
+    const mod = await import("heic-convert");
+    _heicConvert = mod.default ?? mod;
+  }
+  const result = await _heicConvert!({ buffer, format: "JPEG", quality: 0.9 });
+  return Buffer.from(result);
+}
 
 interface AnalyzedImage {
   fileId: string;
@@ -80,8 +90,7 @@ async function processImage(
     const isHeic = HEIC_MIMETYPES.has(file.mimeType) || /\.heic$/i.test(file.name);
     if (isHeic) {
       console.log(`[analyze] Converting HEIC → JPEG: ${file.name}`);
-      const converted = await heicConvert({ buffer: raw, format: "JPEG", quality: 0.9 });
-      raw = Buffer.from(converted);
+      raw = await convertHeic(raw);
       console.log(`[analyze] HEIC converted: ${rawSizeKB} KB → ${Math.round(raw.length / 1024)} KB`);
     }
 
@@ -178,10 +187,11 @@ folder are processed (prevents cross-product image mixups).`,
       const cap = maxImages ?? 50;
       const context = { productName, brand, vendorHint };
 
-      // Process images sequentially in batches of 3 to stay within 512MB RAM.
-      // Each image: download (up to 20MB) + Sharp decode + compress.
-      // 3 concurrent keeps peak memory around 150-200MB.
-      const processed = await mapConcurrent(allFiles, 3, async (file, i) => {
+      // Process images ONE AT A TIME to stay within 512MB RAM.
+      // Each image: download (up to 20MB) + Sharp decode/compress + Gemini API call.
+      // Sequential processing keeps peak memory under 150MB.
+      // The bottleneck is Gemini API latency (~3-5s per image), not CPU.
+      const processed = await mapConcurrent(allFiles, 1, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${allFiles.length}: ${file.name}`);
         return processImage(file, context, 100, 50);
       });
