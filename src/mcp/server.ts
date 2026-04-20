@@ -23,6 +23,8 @@ import {
 import { registerAnalyticsGateway, registerSearchConsoleGateway, registerIndexingGateway, registerTagManagerGateway } from "./gateway-google.js";
 import { registerImageTools } from "./tools/images.js";
 import { registerIngestTools } from "./tools/ingest.js";
+import { registerCreateProductTool } from "./tools/create-product.js";
+import { registerTranslateTool } from "./tools/translate.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -146,7 +148,9 @@ use the shopify_* tools.`,
 
   // Utility tools
   registerImageTools(server);            // compress_images: download, compress to JPEG, return base64
-  registerIngestTools(server);           // analyze_images: Drive folder → vision analysis + thumbnails
+  registerIngestTools(server);           // analyze_images + ingest_product: Drive folder → vision analysis + Shopify preflight
+  registerCreateProductTool(server);     // create_product: full Shopify creation sequence + media upload + translation
+  registerTranslateTool(server);         // translate_for_market: US market SEO overrides
 
   // Prompts (pre-built workflows)
   registerPrompts(server);

@@ -3,6 +3,15 @@ import { z } from "zod";
 import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, type DriveFile } from "../../google/drive.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
+import {
+  lookupNextSku,
+  checkDuplicates,
+  getConfigReference,
+  getStyleReference,
+  lookupMetaobject,
+  listMetaobjectEntries,
+  TAXONOMY_MAP,
+} from "../../shopify/preflight.js";
 
 const HEIC_MIMETYPES = new Set(["image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"]);
 
@@ -241,6 +250,242 @@ folder are processed (prevents cross-product image mixups).`,
       };
 
       return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }] };
+    },
+  );
+
+  // ===========================================================================
+  // ingest_product — parallel image analysis + Shopify preflight
+  // ===========================================================================
+
+  server.tool(
+    "ingest_product",
+    `Full product ingestion preflight. Runs image analysis AND Shopify lookups
+in parallel server-side, returning everything Claude needs to write descriptions,
+build SEO, and present a preview. One call replaces ~15 individual tool calls.
+
+Returns: image analysis, next SKU, duplicate check, config + style references,
+brand metaobject, available colors/finishes/polish-types, pricing, taxonomy.
+
+After receiving the result, Claude writes descriptions + SEO, presents preview
+to the user for approval, then calls create_product to execute.`,
+    {
+      folderId: z.string().describe("Google Drive folder ID containing product images"),
+      vendor: z.string().describe("Brand/vendor name (e.g. 'Cadillacquer')"),
+      title: z.string().describe("Product/shade name (e.g. 'Lavender Sunset')"),
+      stockType: z.enum(["preorder", "in-stock"]).describe("Preorder or in-stock — determines template and required metafields"),
+      preorderDates: z.object({
+        startDate: z.string().describe("ISO date for preorder start (e.g. '2026-04-28')"),
+        endDate: z.string().describe("ISO date for last intended preorder day"),
+        shipDate: z.string().optional().describe("ISO date for expected ship date"),
+      }).optional().describe("Required when stockType is 'preorder'"),
+      priceOverride: z.string().optional().describe("Override brand default pricing (e.g. '18.00')"),
+      vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
+      maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
+    },
+    async ({ folderId, vendor, title, stockType, preorderDates, priceOverride, vendorHint, maxImages }) => {
+      const startTime = Date.now();
+      const warnings: string[] = [];
+
+      // Validate preorder dates
+      if (stockType === "preorder" && !preorderDates) {
+        return {
+          content: [{ type: "text" as const, text: "stockType is 'preorder' but preorderDates not provided. Include startDate and endDate." }],
+          isError: true,
+        };
+      }
+
+      // Get folder metadata first (fast, needed for logging)
+      let folderName: string;
+      try {
+        const meta = await getFolderMeta(folderId);
+        folderName = meta.name;
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: `Error accessing folder ${folderId}: ${err}` }],
+          isError: true,
+        };
+      }
+
+      console.log(`[ingest] Starting preflight: "${title}" by ${vendor} (${stockType}) — folder "${folderName}"`);
+
+      // Derive brand handle for metaobject lookup (kebab-case)
+      const brandHandle = vendor.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+      // ---------------------------------------------------------------
+      // Run ALL operations in parallel
+      // ---------------------------------------------------------------
+      const [
+        imageResult,
+        skuResult,
+        dedupResult,
+        configRefResult,
+        styleRefResult,
+        brandResult,
+        colorsResult,
+        finishesResult,
+        polishTypesResult,
+      ] = await Promise.allSettled([
+        // 1. Image analysis (reuses existing pipeline)
+        (async () => {
+          const allFiles = await listFolderImages(folderId);
+          if (allFiles.length === 0) return { images: [], errors: [], lowConfidence: [] };
+
+          const cap = maxImages ?? 50;
+          const context = { productName: title, brand: vendor, vendorHint };
+          const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
+
+          const processed = await mapConcurrent(allFiles, concurrency, async (file, i) => {
+            console.log(`[ingest] Image ${i + 1}/${allFiles.length}: ${file.name}`);
+            return processImage(file, context);
+          });
+
+          const images: AnalyzedImage[] = [];
+          const errors: Array<{ fileId: string; filename: string; error: string }> = [];
+          const lowConfidence: Array<{ fileId: string; filename: string; confidence: number; reason: string }> = [];
+          let position = 0;
+
+          for (const p of processed) {
+            if (p.result) {
+              if (images.length < cap) {
+                position++;
+                const proposedFilename = toSeoFilename(vendor, title, p.result.analysis.imageType, position);
+                images.push({ ...p.result, proposedFilename });
+                if (p.result.analysis.confidence < 0.75) {
+                  lowConfidence.push({
+                    fileId: p.result.fileId,
+                    filename: p.result.filename,
+                    confidence: p.result.analysis.confidence,
+                    reason: p.result.analysis.imageType === "unknown"
+                      ? "Could not classify image type"
+                      : `Low confidence on ${p.result.analysis.imageType} classification`,
+                  });
+                }
+              }
+            }
+            if (p.error) errors.push(p.error);
+          }
+
+          return { images, errors, lowConfidence };
+        })(),
+
+        // 2. SKU lookup
+        lookupNextSku(vendor),
+
+        // 3. Dedup sweep
+        checkDuplicates(title, vendor),
+
+        // 4. Config reference
+        getConfigReference(vendor, stockType),
+
+        // 5. Style reference
+        getStyleReference(5),
+
+        // 6. Brand metaobject
+        lookupMetaobject("brand", brandHandle),
+
+        // 7. Color metaobjects
+        listMetaobjectEntries("color"),
+
+        // 8. Finish metaobjects
+        listMetaobjectEntries("cosmetic-finish"),
+
+        // 9. Polish type metaobjects
+        listMetaobjectEntries("nailstuff-polish-type"),
+      ]);
+
+      // ---------------------------------------------------------------
+      // Unwrap results, collecting warnings for failures
+      // ---------------------------------------------------------------
+      function unwrap<T>(result: PromiseSettledResult<T>, label: string, fallback: T): T {
+        if (result.status === "fulfilled") return result.value;
+        warnings.push(`${label} failed: ${result.reason}`);
+        console.error(`[ingest] ${label} failed:`, result.reason);
+        return fallback;
+      }
+
+      const imageData = unwrap(imageResult, "Image analysis", { images: [], errors: [], lowConfidence: [] });
+      const sku = unwrap(skuResult, "SKU lookup", { prefix: "???", currentMax: null, next: "NP-???-001" });
+      const duplicates = unwrap(dedupResult, "Dedup check", { exact: [], fuzzy: [], catalogWide: [] });
+      const configReference = unwrap(configRefResult, "Config reference", null);
+      const styleReference = unwrap(styleRefResult, "Style reference", []);
+      const brand = unwrap(brandResult, "Brand metaobject", null);
+      const colors = unwrap(colorsResult, "Color metaobjects", []);
+      const finishes = unwrap(finishesResult, "Finish metaobjects", []);
+      const polishTypes = unwrap(polishTypesResult, "Polish type metaobjects", []);
+
+      // Derive pricing from config reference or override
+      let pricing: { price: string; compareAtPrice: string | null } | null = null;
+      if (priceOverride) {
+        pricing = { price: priceOverride, compareAtPrice: null };
+      } else if (configReference?.variants?.[0]) {
+        const v = configReference.variants[0];
+        pricing = { price: v.price, compareAtPrice: v.compareAtPrice };
+      }
+
+      // Brand warning
+      if (!brand) {
+        warnings.push(`Brand metaobject not found for handle "${brandHandle}". Verify brand exists or try a different handle.`);
+      }
+
+      // Image warnings
+      if (imageData.images.length === 0) {
+        warnings.push("No images were successfully analyzed. Check folder contents.");
+      }
+      if (imageData.lowConfidence.length > 0) {
+        warnings.push(`${imageData.lowConfidence.length} image(s) have low confidence — review recommended.`);
+      }
+
+      // Taxonomy (default to nail polish)
+      const taxonomy = TAXONOMY_MAP["nail_polish"];
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[ingest] Preflight complete: ${imageData.images.length} images, ${elapsed}s elapsed`);
+
+      const result = {
+        folderId,
+        folderName,
+        title,
+        vendor,
+        stockType,
+        ...(preorderDates ? { preorderDates } : {}),
+
+        images: imageData.images.map((img) => ({
+          fileId: img.fileId,
+          filename: img.filename,
+          proposedFilename: img.proposedFilename,
+          parentFolderId: img.parentFolderId,
+          originalSizeKB: Math.round(img.originalSizeBytes / 1024),
+          imageType: img.analysis.imageType,
+          lightingCondition: img.analysis.lightingCondition,
+          nailCount: img.analysis.nailCount,
+          skinTone: img.analysis.skinTone,
+          dominantColors: img.analysis.dominantColors,
+          observedEffects: img.analysis.observedEffects,
+          altText: img.analysis.altText,
+          confidence: img.analysis.confidence,
+        })),
+        ...(imageData.errors.length > 0 ? { imageErrors: imageData.errors } : {}),
+        ...(imageData.lowConfidence.length > 0 ? { lowConfidenceImages: imageData.lowConfidence } : {}),
+
+        sku,
+        duplicates,
+        configReference,
+        styleReference,
+        brand,
+
+        availableMetaobjects: {
+          colors,
+          finishes,
+          polishTypes,
+        },
+
+        pricing,
+        taxonomy,
+        processingTimeSeconds: Number(elapsed),
+        warnings,
+      };
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     },
   );
 }
