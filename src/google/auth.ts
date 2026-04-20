@@ -1,13 +1,21 @@
 import { GoogleAuth } from "googleapis-common";
 import { BetaAnalyticsDataClient } from "@google-analytics/data";
+import { readFileSync } from "fs";
 
 let cachedAuth: GoogleAuth | undefined;
 let cachedAnalyticsClient: BetaAnalyticsDataClient | undefined;
 
 export function getServiceAccountKey(): Record<string, string> {
+  // Support both inline JSON (Render) and file path (TrueNAS/home server)
+  const filePath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE;
+  if (filePath) {
+    return JSON.parse(readFileSync(filePath, "utf-8")) as Record<string, string>;
+  }
   const raw = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
-  if (!raw) throw new Error("GOOGLE_SERVICE_ACCOUNT_KEY env var not set");
-  return JSON.parse(raw) as Record<string, string>;
+  if (raw) {
+    return JSON.parse(raw) as Record<string, string>;
+  }
+  throw new Error("Set GOOGLE_SERVICE_ACCOUNT_KEY or GOOGLE_SERVICE_ACCOUNT_KEY_FILE");
 }
 
 export function getGoogleAuth(): GoogleAuth {
