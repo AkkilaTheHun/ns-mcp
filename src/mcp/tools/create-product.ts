@@ -16,6 +16,9 @@ import sharp from "sharp";
 import { shopifyGraphQL, throwIfUserErrors } from "../../shopify/client.js";
 import { downloadFile } from "../../google/drive.js";
 import { registerTranslation } from "./translate.js";
+import { getCurrentSessionId } from "../../context.js";
+import { getSessionShop } from "../../session.js";
+import { config } from "../../config.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -28,8 +31,20 @@ const DEFAULT_HS_CODE = "330430";
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function gql<T = unknown>(query: string, variables?: Record<string, unknown>) {
-  return shopifyGraphQL<T>(query, variables);
+async function gql<T = unknown>(query: string, variables?: Record<string, unknown>, shop?: string) {
+  return shopifyGraphQL<T>(query, variables, shop);
+}
+
+function resolveShop(): string {
+  const sessionId = getCurrentSessionId();
+  if (sessionId) {
+    const selected = getSessionShop(sessionId);
+    if (selected) return selected;
+  }
+  const shopDomains = [...config.shops.keys()];
+  if (shopDomains.length === 1) return shopDomains[0];
+  if (config.defaultShop) return config.defaultShop;
+  throw new Error("No shop selected. Use shopify_shop(action: 'select') to choose a shop first.");
 }
 
 function extractId(gid: string): string {
@@ -51,6 +66,7 @@ interface MediaItem {
 async function uploadMediaToShopify(
   productId: string,
   media: MediaItem[],
+  shop?: string,
 ): Promise<{ uploaded: number; errors: string[] }> {
   const errors: string[] = [];
   let uploaded = 0;
@@ -98,6 +114,7 @@ async function uploadMediaToShopify(
             fileSize: String(compressed.length),
           }],
         },
+        shop,
       );
 
       throwIfUserErrors(stageRes.data?.stagedUploadsCreate?.userErrors, "stagedUploadsCreate");
@@ -143,6 +160,7 @@ async function uploadMediaToShopify(
             mediaContentType: "IMAGE",
           }],
         },
+        shop,
       );
 
       const mediaErrors = attachRes.data?.productCreateMedia?.mediaUserErrors;
@@ -244,13 +262,18 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
       const warnings: string[] = [];
       const startTime = Date.now();
 
+      // Resolve shop once, bind to all queries
+      const shop = resolveShop();
+      const q = <T = unknown>(query: string, variables?: Record<string, unknown>) =>
+        gql<T>(query, variables, shop);
+
       try {
-        console.log(`[create] Starting: "${params.title}" by ${params.vendor}`);
+        console.log(`[create] Starting: "${params.title}" by ${params.vendor} on ${shop}`);
 
         // ---------------------------------------------------------------
         // Pre-check: handle uniqueness
         // ---------------------------------------------------------------
-        const existingRes = await gql<{
+        const existingRes = await q<{
           productByHandle: { id: string; title: string } | null;
         }>(
           `query($handle: String!) { productByHandle(handle: $handle) { id title } }`,
@@ -290,7 +313,7 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
         if (params.collectionsToJoin?.length) createInput.collectionsToJoin = params.collectionsToJoin;
         if (params.metafields.length > 0) createInput.metafields = params.metafields;
 
-        const createRes = await gql<{
+        const createRes = await q<{
           productCreate: {
             product: {
               id: string;
@@ -325,7 +348,7 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
         // Step 2: productUpdate — set category
         // ---------------------------------------------------------------
         console.log("[create] Step 2: productUpdate (category)");
-        const catRes = await gql<{
+        const catRes = await q<{
           productUpdate: {
             product: { id: string; category: { id: string } | null };
             userErrors: Array<{ field: string[]; message: string }>;
@@ -354,7 +377,7 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
             type: mf.type,
           }));
 
-          const mfRes = await gql<{
+          const mfRes = await q<{
             metafieldsSet: {
               metafields: Array<{ id: string; namespace: string; key: string }>;
               userErrors: Array<{ field: string[]; message: string }>;
@@ -393,7 +416,7 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
             },
           };
 
-          const varRes = await gql<{
+          const varRes = await q<{
             productVariantsBulkUpdate: {
               productVariants: Array<{ id: string; sku: string }>;
               userErrors: Array<{ field: string[]; message: string }>;
@@ -420,7 +443,7 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
           console.log(`[create] Step 5: Media upload (${params.media.length} images)`);
           // Sort by position before uploading
           const sorted = [...params.media].sort((a, b) => a.position - b.position);
-          mediaResult = await uploadMediaToShopify(productId, sorted);
+          mediaResult = await uploadMediaToShopify(productId, sorted, shop);
           if (mediaResult.errors.length > 0) {
             for (const err of mediaResult.errors) {
               warnings.push(`Media: ${err}`);
@@ -432,7 +455,7 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
         // Step 6: Verification re-read
         // ---------------------------------------------------------------
         console.log("[create] Step 6: Verification");
-        const verifyRes = await gql<{
+        const verifyRes = await q<{
           product: {
             id: string;
             handle: string;
@@ -511,6 +534,7 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
             productId,
             US_MARKET_GID,
             params.usTranslation,
+            shop,
           );
           verification.translation = {
             registered: txResult.registered.length > 0,

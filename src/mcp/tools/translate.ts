@@ -7,6 +7,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { shopifyGraphQL, throwIfUserErrors } from "../../shopify/client.js";
+import { getCurrentSessionId } from "../../context.js";
+import { getSessionShop } from "../../session.js";
+import { config } from "../../config.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +39,7 @@ export async function registerTranslation(
   resourceId: string,
   marketId: string,
   translations: { metaTitle?: string; metaDescription?: string; bodyHtml?: string },
+  shop?: string,
 ): Promise<TranslationResult> {
   const warnings: string[] = [];
 
@@ -67,6 +71,7 @@ export async function registerTranslation(
       }
     }`,
     { resourceId },
+    shop,
   );
 
   const content = digestRes.data?.translatableResource?.translatableContent;
@@ -113,6 +118,7 @@ export async function registerTranslation(
       }
     }`,
     { resourceId, translations: translationInputs },
+    shop,
   );
 
   throwIfUserErrors(
@@ -132,6 +138,7 @@ export async function registerTranslation(
       }
     }`,
     { resourceId, locale: "en", marketId },
+    shop,
   );
 
   const verified = verifyRes.data?.translatableResource?.translations ?? [];
@@ -177,7 +184,16 @@ US Market GID: gid://shopify/Market/2190246041`,
     },
     async ({ resourceId, marketId, translations }) => {
       try {
-        const result = await registerTranslation(resourceId, marketId, translations);
+        // Resolve shop from session
+        let shop: string | undefined;
+        const sessionId = getCurrentSessionId();
+        if (sessionId) shop = getSessionShop(sessionId);
+        if (!shop) {
+          const shopDomains = [...config.shops.keys()];
+          if (shopDomains.length === 1) shop = shopDomains[0];
+          else if (config.defaultShop) shop = config.defaultShop;
+        }
+        const result = await registerTranslation(resourceId, marketId, translations, shop);
         return {
           content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
         };

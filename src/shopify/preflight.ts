@@ -2,6 +2,11 @@
  * Shopify preflight helpers for product ingestion.
  * These call shopifyGraphQL directly (bypassing the MCP tool layer)
  * so ingest_product can run them in parallel server-side.
+ *
+ * Every function accepts an optional `shop` parameter (shop domain string)
+ * which is passed through to shopifyGraphQL. This is required when multiple
+ * shops are configured — the caller (ingest_product) resolves the shop
+ * from the MCP session once upfront and threads it through.
  */
 import { shopifyGraphQL } from "./client.js";
 
@@ -65,6 +70,18 @@ export interface MetaobjectEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Internal helper — all queries go through this
+// ---------------------------------------------------------------------------
+
+async function gql<T = unknown>(
+  query: string,
+  variables?: Record<string, unknown>,
+  shop?: string,
+) {
+  return shopifyGraphQL<T>(query, variables, shop);
+}
+
+// ---------------------------------------------------------------------------
 // GraphQL fragments
 // ---------------------------------------------------------------------------
 
@@ -98,7 +115,10 @@ function brandToSkuPrefix(vendor: string): string {
     "dam polish": "DNP",
     "prairie crocus lacquer": "PCL",
     "prairie crocus": "PCL",
+    "prairie crocus polish": "PCP",
     "glam polish": "GP",
+    "chamaeleon": "CHA",
+    "chamaeleon nails polish": "CHA",
   };
 
   const lower = vendor.toLowerCase().trim();
@@ -115,11 +135,12 @@ function brandToSkuPrefix(vendor: string): string {
 
 export async function lookupNextSku(
   vendor: string,
+  shop?: string,
 ): Promise<{ prefix: string; currentMax: string | null; next: string }> {
   const prefix = brandToSkuPrefix(vendor);
   const skuPattern = `NP-${prefix}-*`;
 
-  const res = await shopifyGraphQL<{
+  const res = await gql<{
     productVariants: { edges: Array<{ node: { sku: string } }> };
   }>(
     `query($query: String!) {
@@ -128,6 +149,7 @@ export async function lookupNextSku(
       }
     }`,
     { query: `sku:${skuPattern}` },
+    shop,
   );
 
   const currentMax = res.data?.productVariants?.edges?.[0]?.node?.sku ?? null;
@@ -146,8 +168,8 @@ export async function lookupNextSku(
 // Duplicate Detection
 // ---------------------------------------------------------------------------
 
-async function searchProducts(query: string, first = 10): Promise<ProductMatch[]> {
-  const res = await shopifyGraphQL<{
+async function searchProducts(query: string, shop?: string, first = 10): Promise<ProductMatch[]> {
+  const res = await gql<{
     products: { edges: Array<{ node: ProductMatch }> };
   }>(
     `query($query: String!, $first: Int!) {
@@ -156,6 +178,7 @@ async function searchProducts(query: string, first = 10): Promise<ProductMatch[]
       }
     }`,
     { query, first },
+    shop,
   );
   return res.data?.products?.edges?.map((e) => e.node) ?? [];
 }
@@ -171,14 +194,15 @@ function coreName(title: string): string {
 export async function checkDuplicates(
   title: string,
   vendor: string,
+  shop?: string,
 ): Promise<DedupResult> {
   const core = coreName(title);
 
   // Run all three queries in parallel
   const [exact, fuzzy, catalogWide] = await Promise.all([
-    searchProducts(`title:'${title}' vendor:'${vendor}'`),
-    searchProducts(`title:*${core}* vendor:'${vendor}'`),
-    searchProducts(`title:*${core}*`),
+    searchProducts(`title:'${title}' vendor:'${vendor}'`, shop),
+    searchProducts(`title:*${core}* vendor:'${vendor}'`, shop),
+    searchProducts(`title:*${core}*`, shop),
   ]);
 
   return { exact, fuzzy, catalogWide };
@@ -191,12 +215,13 @@ export async function checkDuplicates(
 export async function getConfigReference(
   vendor: string,
   stockType: string,
+  shop?: string,
 ): Promise<ConfigReference | null> {
   // Query most recent product from same vendor
   const templateFilter = stockType === "preorder" ? "tag:Preorder" : "-tag:Preorder";
   const query = `vendor:'${vendor}' ${templateFilter}`;
 
-  const res = await shopifyGraphQL<{
+  const res = await gql<{
     products: { edges: Array<{ node: Record<string, unknown> }> };
   }>(
     `query($query: String!) {
@@ -205,6 +230,7 @@ export async function getConfigReference(
       }
     }`,
     { query },
+    shop,
   );
 
   const node = res.data?.products?.edges?.[0]?.node;
@@ -237,8 +263,8 @@ export async function getConfigReference(
 // Style Reference
 // ---------------------------------------------------------------------------
 
-export async function getStyleReference(count = 5): Promise<StyleReference[]> {
-  const res = await shopifyGraphQL<{
+export async function getStyleReference(count = 5, shop?: string): Promise<StyleReference[]> {
+  const res = await gql<{
     products: { edges: Array<{ node: Record<string, unknown> }> };
   }>(
     `query($first: Int!) {
@@ -247,6 +273,7 @@ export async function getStyleReference(count = 5): Promise<StyleReference[]> {
       }
     }`,
     { first: count },
+    shop,
   );
 
   return (res.data?.products?.edges ?? []).map((e) => ({
@@ -266,14 +293,14 @@ export async function getStyleReference(count = 5): Promise<StyleReference[]> {
 
 /**
  * Find a metaobject by displayName (case-insensitive).
- * Falls back to handle lookup if displayName match fails.
- * This is more robust than guessing handles from vendor names.
+ * Falls back to partial match if exact match fails.
  */
 export async function findBrandMetaobject(
   vendor: string,
+  shop?: string,
 ): Promise<{ id: string; displayName: string; handle: string } | null> {
   // List all brand metaobjects (typically < 20) and match by displayName
-  const entries = await listMetaobjectEntries("brand");
+  const entries = await listMetaobjectEntries("brand", shop);
   const vendorLower = vendor.toLowerCase().trim();
 
   // Try exact displayName match first
@@ -291,13 +318,13 @@ export async function findBrandMetaobject(
   return null;
 }
 
-export async function listMetaobjectEntries(type: string): Promise<MetaobjectEntry[]> {
+export async function listMetaobjectEntries(type: string, shop?: string): Promise<MetaobjectEntry[]> {
   const entries: MetaobjectEntry[] = [];
   let after: string | undefined;
 
   // Paginate to get all entries (most types have < 50)
   do {
-    const res = await shopifyGraphQL<{
+    const res = await gql<{
       metaobjects: {
         edges: Array<{ cursor: string; node: MetaobjectEntry }>;
         pageInfo: { hasNextPage: boolean; endCursor: string };
@@ -310,6 +337,7 @@ export async function listMetaobjectEntries(type: string): Promise<MetaobjectEnt
         }
       }`,
       { type, first: 50, after },
+      shop,
     );
 
     const data = res.data?.metaobjects;

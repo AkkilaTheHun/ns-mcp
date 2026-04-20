@@ -3,6 +3,9 @@ import { z } from "zod";
 import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, type DriveFile } from "../../google/drive.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
+import { getCurrentSessionId } from "../../context.js";
+import { getSessionShop } from "../../session.js";
+import { config } from "../../config.js";
 import {
   lookupNextSku,
   checkDuplicates,
@@ -308,6 +311,28 @@ to the user for approval, then calls create_product to execute.`,
 
       console.log(`[ingest] Starting preflight: "${title}" by ${vendor} (${stockType}) — folder "${folderName}"`);
 
+      // Resolve shop domain for Shopify queries.
+      // Must happen before the parallel block — all preflight helpers need it.
+      let shop: string | undefined;
+      const sessionId = getCurrentSessionId();
+      if (sessionId) shop = getSessionShop(sessionId);
+      if (!shop) {
+        // Fall back to default shop if only one is configured
+        const shopDomains = [...config.shops.keys()];
+        if (shopDomains.length === 1) {
+          shop = shopDomains[0];
+        } else if (config.defaultShop) {
+          shop = config.defaultShop;
+        }
+      }
+      if (!shop) {
+        return {
+          content: [{ type: "text" as const, text: "No shop selected. Use shopify_shop(action: 'select') to choose a shop first." }],
+          isError: true,
+        };
+      }
+      console.log(`[ingest] Using shop: ${shop}`);
+
       // ---------------------------------------------------------------
       // Run ALL operations in parallel
       // ---------------------------------------------------------------
@@ -366,28 +391,28 @@ to the user for approval, then calls create_product to execute.`,
         })(),
 
         // 2. SKU lookup
-        lookupNextSku(vendor),
+        lookupNextSku(vendor, shop),
 
         // 3. Dedup sweep
-        checkDuplicates(title, vendor),
+        checkDuplicates(title, vendor, shop),
 
         // 4. Config reference
-        getConfigReference(vendor, stockType),
+        getConfigReference(vendor, stockType, shop),
 
         // 5. Style reference
-        getStyleReference(5),
+        getStyleReference(5, shop),
 
         // 6. Brand metaobject
-        findBrandMetaobject(vendor),
+        findBrandMetaobject(vendor, shop),
 
         // 7. Color metaobjects
-        listMetaobjectEntries("color"),
+        listMetaobjectEntries("color", shop),
 
         // 8. Finish metaobjects
-        listMetaobjectEntries("cosmetic-finish"),
+        listMetaobjectEntries("cosmetic-finish", shop),
 
         // 9. Polish type metaobjects
-        listMetaobjectEntries("nailstuff-polish-type"),
+        listMetaobjectEntries("nailstuff-polish-type", shop),
       ]);
 
       // ---------------------------------------------------------------
