@@ -33,7 +33,19 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
-/** Download, compress, analyze a single image. Returns null on failure. */
+/** Convert raw image bytes to a baseline JPEG buffer. Handles HEIC, PNG, WebP, AVIF, etc. */
+async function toJpegBuffer(raw: Buffer): Promise<Buffer> {
+  // Sharp auto-detects format including HEIC/HEIF.
+  // Convert to a full-size JPEG first, then derive smaller sizes from that.
+  // This avoids decoding HEIC twice and works around platforms where
+  // HEIC decoding is flaky but JPEG is always solid.
+  return sharp(raw, { failOn: "none" })
+    .rotate() // auto-orient from EXIF
+    .jpeg({ quality: 90, mozjpeg: true })
+    .toBuffer();
+}
+
+/** Download, compress, analyze a single image. */
 async function processImage(
   file: DriveFile,
   context: { productName: string; brand: string; vendorHint?: string },
@@ -44,16 +56,16 @@ async function processImage(
     // Download from Drive
     const raw = await downloadFile(file.id);
 
-    // Compress for vision analysis (900px wide, quality 75)
-    const analysisBuffer = await sharp(raw)
-      .rotate() // auto-orient from EXIF
+    // Convert to JPEG once (handles HEIC, PNG, WebP, AVIF, etc.)
+    const jpegFull = await toJpegBuffer(raw);
+
+    // Derive analysis-size and thumbnail from the JPEG (no re-decoding of HEIC)
+    const analysisBuffer = await sharp(jpegFull)
       .resize({ width: 900, withoutEnlargement: true })
       .jpeg({ quality: 75, mozjpeg: true })
       .toBuffer();
 
-    // Generate thumbnail for response (smaller)
-    const thumbBuffer = await sharp(raw)
-      .rotate()
+    const thumbBuffer = await sharp(jpegFull)
       .resize({ width: thumbnailWidth, withoutEnlargement: true })
       .jpeg({ quality: jpegQuality, mozjpeg: true })
       .toBuffer();

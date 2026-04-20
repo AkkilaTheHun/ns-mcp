@@ -266,7 +266,7 @@ Generate **CA (base) + US (override)** variants for every product.
 - Include commercial + shipping context
 - CA → US transformation: spelling (colour → color), geo references, shipping language
 
-Full dual-market strategy lives in the **NailStuff SEO Optimization Plan PDF**. For US market override workflow, see §20b.
+Full dual-market strategy lives in the **NailStuff SEO Optimization Plan PDF** — this is the authoritative reference for all SEO decisions. The core problem it addresses: Google Search Console indexes the .co (US) market at ~2% because of duplicate content across .ca and .co. Every SEO decision should be evaluated against whether it helps differentiate the US market content. For US market override workflow, see §20b.
 
 ## 12. Image Handling
 
@@ -479,10 +479,18 @@ Every product and collection must have a US market override. CA = base content; 
 - **Shipping/duty claims:** Remove `no cross-border fees`, `no duties`, Canada-proximity framing
 - **Currency:** `$14 USD` → `$14`
 
-**Fields always overridden:**
+**Fields always overridden — no exceptions, no shortcuts:**
 - `meta_title`
 - `meta_description`
-- `body_html` — **always**, even when no obvious Canadian language is present (differentiated content is key for .co GSC indexation)
+- `body_html`
+
+**The US body_html must ALWAYS be meaningfully different from the CA version.** Never output "same — no Canadian language present" or skip the US variant. Even when the CA copy contains no Canadian spelling or references, the US version must be rewritten to be distinct content. This is the single most important SEO requirement: Google Search Console is indexing NailStuff's .co (US) market at ~2% because it sees duplicate content across .ca and .co. Unique per-market body copy is the primary lever for fixing this. Every product shipped with identical CA/US descriptions actively hurts the store's US discoverability.
+
+Rewriting strategies when CA copy has no obvious Canadian language:
+- Restructure sentences (lead with different details, change emphasis)
+- Use different synonyms and phrasing (not just spelling swaps)
+- Adjust the commercial hook (CA might emphasize indie/handmade, US might emphasize fast shipping or exclusive selection)
+- Reorder the description flow (CA leads with color, US leads with brand story, or vice versa)
 
 **Market GIDs:**
 - United States: `gid://shopify/Market/2190246041`
