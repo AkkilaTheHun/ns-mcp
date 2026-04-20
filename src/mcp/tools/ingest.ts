@@ -10,7 +10,34 @@ interface AnalyzedImage {
   parentFolderId: string;
   originalSizeBytes: number;
   analysis: ImageAnalysis;
+  proposedFilename: string;
   thumbnailBase64: string;
+}
+
+/** Generate an SEO-friendly filename from brand, product, image type, and position. */
+function toSeoFilename(brand: string, productName: string, imageType: string, position: number): string {
+  const kebab = (s: string) =>
+    s.toLowerCase()
+      .replace(/['']/g, "")           // remove apostrophes
+      .replace(/[^a-z0-9]+/g, "-")    // non-alphanumeric → hyphen
+      .replace(/^-+|-+$/g, "");       // trim leading/trailing hyphens
+
+  // Map internal image types to SEO-friendly suffixes
+  const typeSuffix: Record<string, string> = {
+    bottle_in_hand: "bottle",
+    bottle_standalone: "bottle",
+    swatch_on_nails: "swatch",
+    swatch_wheel: "swatch-wheel",
+    swatch_stick: "swatch-stick",
+    lifestyle: "lifestyle",
+    layering_demo: "layering",
+    group_shot: "collection",
+    macro_detail: "macro",
+    unknown: "photo",
+  };
+
+  const suffix = typeSuffix[imageType] ?? "photo";
+  return `${kebab(brand)}-${kebab(productName)}-${suffix}-${position}.jpg`;
 }
 
 /** Process images with concurrency limit. */
@@ -51,7 +78,7 @@ async function processImage(
   context: { productName: string; brand: string; vendorHint?: string },
   thumbnailWidth: number,
   jpegQuality: number,
-): Promise<{ result?: AnalyzedImage; error?: { fileId: string; filename: string; error: string } }> {
+): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Download from Drive
     const raw = await downloadFile(file.id);
@@ -115,8 +142,22 @@ folder are processed (prevents cross-product image mixups).`,
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
       maxImages: z.number().optional().default(50).describe("Max images to successfully analyze (default 50). Errors don't count against this cap."),
     },
-    async ({ folderId, productName, brand, vendorHint, maxImages }) => {
+    async ({ folderId, productName, brand, vendorHint, maxImages }, extra) => {
       const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+      const progressToken = extra?._meta?.progressToken;
+
+      /** Send a progress notification if the client supports it. */
+      const reportProgress = async (progress: number, total: number, message: string) => {
+        if (!progressToken || !extra?.sendNotification) return;
+        try {
+          await extra.sendNotification({
+            method: "notifications/progress" as const,
+            params: { progressToken, progress, total, message },
+          });
+        } catch {
+          // Client may not support progress — silently ignore
+        }
+      };
 
       // Get folder metadata
       let folderName: string;
@@ -139,23 +180,33 @@ folder are processed (prevents cross-product image mixups).`,
         };
       }
 
+      await reportProgress(0, allFiles.length, `Found ${allFiles.length} images in "${folderName}"`);
+
       const cap = maxImages ?? 50;
       const context = { productName, brand, vendorHint };
 
-      // Process ALL images (5 concurrent) — cap applies to successful results only
-      const processed = await mapConcurrent(allFiles, 5, (file) =>
-        processImage(file, context, 400, 65),
-      );
+      // Process ALL images with progress reporting
+      let completed = 0;
+      const processed = await mapConcurrent(allFiles, 5, async (file) => {
+        const result = await processImage(file, context, 100, 50);
+        completed++;
+        await reportProgress(completed, allFiles.length, `Analyzed ${completed}/${allFiles.length}: ${file.name}`);
+        return result;
+      });
 
       const results: AnalyzedImage[] = [];
       const errors: Array<{ fileId: string; filename: string; error: string }> = [];
       const lowConfidence: Array<{ fileId: string; filename: string; confidence: number; reason: string }> = [];
       let skippedAfterCap = 0;
 
+      // Collect results and assign SEO filenames (position is 1-indexed)
+      let position = 0;
       for (const p of processed) {
         if (p.result) {
           if (results.length < cap) {
-            results.push(p.result);
+            position++;
+            const proposedFilename = toSeoFilename(brand, productName, p.result.analysis.imageType, position);
+            results.push({ ...p.result, proposedFilename });
             if (p.result.analysis.confidence < 0.75) {
               lowConfidence.push({
                 fileId: p.result.fileId,
@@ -175,6 +226,8 @@ folder are processed (prevents cross-product image mixups).`,
         }
       }
 
+      await reportProgress(allFiles.length, allFiles.length, `Done — ${results.length} analyzed, ${errors.length} errors`);
+
       // Build summary JSON (without thumbnail base64 — those go as image blocks)
       const summary = {
         folderId,
@@ -186,6 +239,7 @@ folder are processed (prevents cross-product image mixups).`,
         images: results.map((r) => ({
           fileId: r.fileId,
           filename: r.filename,
+          proposedFilename: r.proposedFilename,
           parentFolderId: r.parentFolderId,
           originalSizeKB: Math.round(r.originalSizeBytes / 1024),
           imageType: r.analysis.imageType,
@@ -209,7 +263,7 @@ folder are processed (prevents cross-product image mixups).`,
       for (const r of results) {
         content.push({
           type: "text",
-          text: `\n--- ${r.filename} (${r.analysis.imageType}, confidence: ${r.analysis.confidence}) ---`,
+          text: `\n--- ${r.proposedFilename} (was: ${r.filename}) | ${r.analysis.imageType}, confidence: ${r.analysis.confidence} ---`,
         });
         content.push({
           type: "image",

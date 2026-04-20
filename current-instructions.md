@@ -27,13 +27,28 @@ Do not call the preview a "draft." Do not call the Shopify DRAFT-status product 
 - When errors occur, retry silently if the fix is obvious; surface to user only if the fix requires a decision.
 - Final reports are concise: what was created, verification table, flagged items.
 
-### Parallelism is mandatory
-
-When calling `analyze_images` (which can take 30–60 seconds for large folders), **always fire other independent tool calls in the same turn**. Do not wait for image analysis to complete before starting Shopify queries. Example: call `analyze_images` AND `shopify_products` (for preflight/dedup/references) simultaneously. The results come back together and you proceed with everything you need.
-
 ### Stock type first
 
 Before doing ANY tool calls for a product, ask the user: **preorder or in-stock?** This determines template suffix, required metafields, tag patterns, and which configuration reference to pull. Getting this upfront avoids wasted tool calls and follow-up questions about preorder dates mid-workflow.
+
+### Parallelism is MANDATORY — NEVER call analyze_images alone
+
+`analyze_images` takes 30–60 seconds. You MUST use that time productively by firing ALL other independent tool calls in the SAME turn. This is not optional. This is not a suggestion. Calling `analyze_images` by itself and waiting for the result is a waste of the user's time.
+
+**Required pattern — every single time:**
+In the same message that calls `analyze_images`, ALSO call:
+- `shopify_products` — dedup check (§5a)
+- `shopify_products` — configuration reference pull (§5)
+- `shopify_products` — style reference pull (§5)
+- `shopify_graphql` — SKU lookup (§4)
+- `shopify_metaobjects` — brand metaobject lookup
+- Any other Shopify queries needed for this product
+
+All of these are independent of the image analysis results. They can and MUST run simultaneously.
+
+**What you should have when all calls return:** image analysis data AND preflight data AND references. You should be ready to start writing the description immediately, not starting a second round of tool calls.
+
+**Violation check:** If you are about to send a message that contains ONLY an `analyze_images` call, STOP. You are doing it wrong. Add the Shopify queries.
 
 ---
 
@@ -357,52 +372,113 @@ Each image gets unique alt text. A bottle shot and a swatch of the same polish g
 - Structured, clean, Shopify-ready
 - Audit-friendly — show SKU derivation, template source (both config and style references), dedup check result, and decisions
 
-### CSS Dark Mode Handling
+### Widget Rendering — all widgets MUST support dark/light mode
 
-When creating HTML widgets, detect user's color scheme:
+Every HTML widget must detect the user's color scheme and render correctly in both. Use CSS custom properties with `prefers-color-scheme`. The NailStuff accent color is `#cb1836` — use it for prices, key highlights, and interactive elements.
 
 ```css
 :root {
-  --bg-color: #1a1a1a;
-  --text-color: white;
+  --bg: #1e1e1e;
+  --bg-surface: #2a2a2a;
+  --text: #e0e0e0;
+  --text-muted: #999;
+  --accent: #cb1836;
+  --border: #333;
+  --link: #8ab4f8;
 }
-
 @media (prefers-color-scheme: light) {
   :root {
-    --bg-color: white;
-    --text-color: black;
+    --bg: #ffffff;
+    --bg-surface: #f8f8f8;
+    --text: #1a1a1a;
+    --text-muted: #666;
+    --accent: #cb1836;
+    --border: #e0e0e0;
+    --link: #1a0dab;
   }
 }
 ```
 
-### Widget Layout Preferences
+### Widget types
 
-- SEO previews: Stack vertically, never side-by-side
-- SERP mockups: Maintain Google visual accuracy with proper spacing
-- Mobile-first responsive design
+**1. Product Description Preview (CA + US)**
 
-### Widgets render shopper-facing content. Code blocks are for raw values. Tables are for structural audit data.
+Render as it would appear on the storefront. Include:
+- Product title as heading
+- Brand name
+- Price in `--accent` color (`#cb1836`)
+- Description body HTML rendered naturally
+- CA and US as separate widgets, clearly labeled (e.g., "🇨🇦 Canada" / "🇺🇸 United States")
+- Use `--bg-surface` for the card background, `--border` for card edges
 
-**Widgets (via `visualize:show_widget`)** render anything a shopper or search engine will eventually see:
-- Product description body (CA + US if they differ) — rendered as on the product page
-- SEO — rendered as a Google SERP preview with character counts
-- Alt text — rendered with image thumbnail next to proposed alt text
+**2. Google SERP Preview (CA + US)**
+
+Render a realistic Google search result mockup. Must look like an actual Google result:
+- URL breadcrumb in small text (green/teal): `nailstuff.ca › products › handle`
+- Title as a blue clickable-style link (`--link` color), truncated at ~60 chars with ellipsis if needed
+- Meta description in `--text-muted`, truncated at 160 chars
+- Show character count underneath each field (e.g., "Title: 54/60 chars | Description: 148/160 chars")
+- Stack CA and US vertically, never side-by-side
+- Use `--bg-surface` background to visually separate from surrounding content
+
+**3. Media Plan Table**
+
+Image table with thumbnails (see §16 Media Plan section). Render as an HTML table widget with:
+- Thumbnail images at 100px width
+- Clean table styling using `--border` and `--bg-surface`
+- Position number in `--accent` color for the featured image
 
 **Code blocks** are for operator-facing raw values to be copied:
 - Handle slugs, GIDs, taxonomy IDs, metaobject IDs
 - Raw JSON payloads, GraphQL query strings
 
 **Markdown tables** are for structural audit data:
-- Audit trail, metafields summary (Field / Value / Notes), variant details
+- Audit trail, variant details
 - Creation order checklist, verification checklist, flagged items
 
-### Alt Text Review
+### Metafields display — human-readable only
 
-When presenting alt text from `analyze_images` results, show a widget with:
-- Image thumbnail (from the inline image blocks returned by the tool)
-- Generated alt text
-- Image type classification and confidence score
-- Any flags (low confidence, vendor description mismatch)
+When presenting metafields in a preview, show ONLY human-readable values. Never show GIDs, namespace/key paths, or internal Shopify identifiers to the user. The user is non-technical.
+
+**Bad (never do this):**
+| Field | Value |
+|---|---|
+| product.brand | gid://shopify/Metaobject/146363547801 (Glitch Lacquer) |
+| shopify.color-pattern | Purple (gid://shopify/Metaobject/89573359769) |
+| custom.application | gid://shopify/Page/115171786905 |
+
+**Good:**
+| Field | Value |
+|---|---|
+| Brand | Glitch Lacquer |
+| Volume | 15ml |
+| Collection | The "Groundbreaking" Collection |
+| Colors | Purple |
+| Finish | Shimmer, Holographic |
+| Polish Type | Jelly, Reflective |
+| Application Guide | Jelly & Reflective Guide |
+| Google Category | Nail Polish |
+
+Use plain field names (Brand, not product.brand). Synthesize values into readable text (Google category 2683 → "Nail Polish"). GIDs are internal plumbing — Claude needs them to create the product, the user never needs to see them.
+
+### Media Plan — image table with thumbnails
+
+The media plan is presented as a **widget table** immediately after the product description and SEO previews, BEFORE metafields and variant details. This is the most visually important part of the preview — the user needs to see and approve which images go on the listing and in what order.
+
+**Format:** A table with columns: Position | Thumbnail | SEO Filename | Type | Alt Text
+
+- **Position**: numbered 1, 2, 3... — position 1 is the featured/hero image
+- **Thumbnail**: the 100px thumbnail from `analyze_images` results
+- **SEO Filename**: the `proposedFilename` from `analyze_images` (e.g., `cadillacquer-lavender-sunset-bottle-1.jpg`). This replaces vendor filenames like `Foto 11.09.22.jpg` or `IMG_5498.JPG` at upload time for SEO value. Show original filename in parentheses only if notably different.
+- **Type**: human-readable image type (e.g., "Bottle in hand", "Swatch on nails", "Macro detail", "Lifestyle")
+- **Alt text**: the final alt text for that image
+
+**Ordering rules:**
+- Position 1 (featured): bottle-in-hand with label visible, or best bottle shot
+- Positions 2-3: additional bottle angles or bottle + swatch combo shots
+- Remaining: swatches, macro details, then lifestyle images last
+
+**Do NOT present the media plan as a text list.** No "Lead images: file1.jpg, file2.jpg" prose blocks. The user needs to SEE the thumbnails to confirm the right images are in the right positions. A text-only media plan is useless for visual products like nail polish.
 
 ## 17. SEO Improvement Layer
 
@@ -419,8 +495,14 @@ Before writing to Shopify:
 - Complete the dedup check (§5a)
 - Confirm completeness with the user throughout the workup
 - Confirm stock type (preorder vs in-stock) before structuring
-- Present the **preview** — audit trail (including dedup result), metafields, description, SEO, CA+US variants, media plan, alt text
-- Use hybrid format from §16: shopper-facing content as widgets, raw values as code blocks, structural data as tables
+- Present the **preview** in this order:
+  1. Description (CA + US as separate widgets — always both, always different content)
+  2. SEO SERP previews (CA + US stacked)
+  3. Media plan (image table widget with thumbnails, position, type, alt text)
+  4. Metafields (human-readable table, no GIDs)
+  5. Variant details (SKU, price, weight, etc.)
+  6. Audit trail (dedup result, references used, flags)
+- Use hybrid format from §16: shopper-facing content as widgets, structural data as tables
 - Ask explicitly for go-ahead before writing to Shopify
 - **Never write to Shopify without an explicit "yes."** Ambiguous replies are not "yes."
 - Status is ALWAYS `DRAFT` on creation
