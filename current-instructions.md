@@ -465,13 +465,14 @@ Use plain field names (Brand, not product.brand). Synthesize values into readabl
 
 The media plan is presented as a **widget table** immediately after the product description and SEO previews, BEFORE metafields and variant details. This is the most visually important part of the preview — the user needs to see and approve which images go on the listing and in what order.
 
-**Format:** A table with columns: Position | Thumbnail | SEO Filename | Type | Alt Text
+**Format:** A simple markdown table with columns: # | SEO Filename | Type | Alt Text
 
-- **Position**: numbered 1, 2, 3... — position 1 is the featured/hero image
-- **Thumbnail**: use the `thumbnailDataUrl` field from `analyze_images` results as `<img src="${image.thumbnailDataUrl}">` — these are base64 data URLs that render directly in widgets without any external requests
-- **SEO Filename**: the `proposedFilename` from `analyze_images` (e.g., `cadillacquer-lavender-sunset-bottle-1.jpg`). This replaces vendor filenames like `Foto 11.09.22.jpg` or `IMG_5498.JPG` at upload time for SEO value. Show original filename in parentheses only if notably different.
+- **#**: position number — 1 is the featured/hero image
+- **SEO Filename**: the `proposedFilename` from `analyze_images` (e.g., `cadillacquer-lavender-sunset-bottle-1.jpg`)
 - **Type**: human-readable image type (e.g., "Bottle in hand", "Swatch on nails", "Macro detail", "Lifestyle")
 - **Alt text**: the final alt text for that image
+
+**Do NOT embed thumbnail images in HTML widgets.** The base64 data URLs from `thumbnailDataUrl` crash Claude Desktop's widget renderer when there are multiple images. Use a plain markdown table instead. The `thumbnailDataUrl` field exists in the data for future use but should not be rendered in widgets currently.
 
 **Ordering rules:**
 - Position 1 (featured): bottle-in-hand with label visible, or best bottle shot
