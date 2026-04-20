@@ -101,7 +101,7 @@ folder are processed (prevents cross-product image mixups).`,
       productName: z.string().describe("Product/shade name (e.g. 'Lavender Sunset')"),
       brand: z.string().describe("Brand name (e.g. 'Cadillacquer')"),
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
-      maxImages: z.number().optional().default(20).describe("Max images to analyze (default 20)"),
+      maxImages: z.number().optional().default(50).describe("Max images to successfully analyze (default 50). Errors don't count against this cap."),
     },
     async ({ folderId, productName, brand, vendorHint, maxImages }) => {
       const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
@@ -127,31 +127,35 @@ folder are processed (prevents cross-product image mixups).`,
         };
       }
 
-      // Cap to maxImages
-      const files = allFiles.slice(0, maxImages ?? 20);
+      const cap = maxImages ?? 50;
       const context = { productName, brand, vendorHint };
 
-      // Process all images: download → compress → analyze (5 concurrent)
-      const processed = await mapConcurrent(files, 5, (file) =>
+      // Process ALL images (5 concurrent) — cap applies to successful results only
+      const processed = await mapConcurrent(allFiles, 5, (file) =>
         processImage(file, context, 400, 65),
       );
 
       const results: AnalyzedImage[] = [];
       const errors: Array<{ fileId: string; filename: string; error: string }> = [];
       const lowConfidence: Array<{ fileId: string; filename: string; confidence: number; reason: string }> = [];
+      let skippedAfterCap = 0;
 
       for (const p of processed) {
         if (p.result) {
-          results.push(p.result);
-          if (p.result.analysis.confidence < 0.75) {
-            lowConfidence.push({
-              fileId: p.result.fileId,
-              filename: p.result.filename,
-              confidence: p.result.analysis.confidence,
-              reason: p.result.analysis.imageType === "unknown"
-                ? "Could not classify image type"
-                : `Low confidence on ${p.result.analysis.imageType} classification`,
-            });
+          if (results.length < cap) {
+            results.push(p.result);
+            if (p.result.analysis.confidence < 0.75) {
+              lowConfidence.push({
+                fileId: p.result.fileId,
+                filename: p.result.filename,
+                confidence: p.result.analysis.confidence,
+                reason: p.result.analysis.imageType === "unknown"
+                  ? "Could not classify image type"
+                  : `Low confidence on ${p.result.analysis.imageType} classification`,
+              });
+            }
+          } else {
+            skippedAfterCap++;
           }
         }
         if (p.error) {
@@ -181,6 +185,7 @@ folder are processed (prevents cross-product image mixups).`,
           altText: r.analysis.altText,
           confidence: r.analysis.confidence,
         })),
+        ...(skippedAfterCap > 0 ? { skippedAfterCap } : {}),
         ...(lowConfidence.length > 0 ? { lowConfidence } : {}),
         ...(errors.length > 0 ? { errors } : {}),
       };
