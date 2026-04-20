@@ -6,7 +6,7 @@ import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
 
 const HEIC_MIMETYPES = new Set(["image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"]);
 
-/** Lazy-load heic-convert only when needed (saves ~20MB on module load). */
+/** Lazy-load heic-convert only when needed. */
 let _heicConvert: ((opts: { buffer: Buffer; format: string; quality: number }) => Promise<ArrayBuffer>) | undefined;
 async function convertHeic(buffer: Buffer): Promise<Buffer> {
   if (!_heicConvert) {
@@ -25,16 +25,15 @@ interface AnalyzedImage {
   originalSizeBytes: number;
   analysis: ImageAnalysis;
   proposedFilename: string;
-  thumbnailBase64: string;
 }
 
 /** Generate an SEO-friendly filename from brand, product, image type, and position. */
 function toSeoFilename(brand: string, productName: string, imageType: string, position: number): string {
   const kebab = (s: string) =>
     s.toLowerCase()
-      .replace(/['']/g, "")           // remove apostrophes
-      .replace(/[^a-z0-9]+/g, "-")    // non-alphanumeric → hyphen
-      .replace(/^-+|-+$/g, "");       // trim leading/trailing hyphens
+      .replace(/['']/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
 
   const typeSuffix: Record<string, string> = {
     bottle_in_hand: "bottle",
@@ -77,16 +76,13 @@ async function mapConcurrent<T, R>(
 async function processImage(
   file: DriveFile,
   context: { productName: string; brand: string; vendorHint?: string },
-  thumbnailWidth: number,
-  jpegQuality: number,
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
-    // Download from Drive
     let raw = await downloadFile(file.id);
     const rawSizeKB = Math.round(raw.length / 1024);
     console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
-    // Convert HEIC/HEIF to JPEG before Sharp — node:22-slim lacks libheif
+    // Convert HEIC/HEIF to JPEG before Sharp
     const isHeic = HEIC_MIMETYPES.has(file.mimeType) || /\.heic$/i.test(file.name);
     if (isHeic) {
       console.log(`[analyze] Converting HEIC → JPEG: ${file.name}`);
@@ -94,22 +90,15 @@ async function processImage(
       console.log(`[analyze] HEIC converted: ${rawSizeKB} KB → ${Math.round(raw.length / 1024)} KB`);
     }
 
-    // Resize to 900px JPEG for analysis
+    // Resize to 900px JPEG for Gemini analysis
     const analysisBuffer = await sharp(raw, { failOn: "none" })
       .rotate()
       .resize({ width: 900, withoutEnlargement: true })
       .jpeg({ quality: 75, mozjpeg: true })
       .toBuffer();
 
-    // Thumbnail derived from the 900px buffer (already decoded, fast resize)
-    const thumbBuffer = await sharp(analysisBuffer)
-      .resize({ width: thumbnailWidth, withoutEnlargement: true })
-      .jpeg({ quality: jpegQuality, mozjpeg: true })
-      .toBuffer();
+    console.log(`[analyze] Compressed ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB`);
 
-    console.log(`[analyze] Compressed ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB analysis, ${Math.round(thumbBuffer.length / 1024)} KB thumb`);
-
-    // Send to Gemini for analysis
     const analysis = await analyzeImage(
       analysisBuffer.toString("base64"),
       "image/jpeg",
@@ -125,7 +114,6 @@ async function processImage(
         parentFolderId: file.parentId,
         originalSizeBytes: file.size,
         analysis,
-        thumbnailBase64: thumbBuffer.toString("base64"),
       },
     };
   } catch (err) {
@@ -140,9 +128,8 @@ export function registerIngestTools(server: McpServer): void {
   server.tool(
     "analyze_images",
     `Analyze product images from a Google Drive folder. Downloads all images,
-compresses them, runs AI vision analysis (image type, colors, effects, skin tone,
-lighting), and generates alt text drafts. Returns structured analysis data plus
-thumbnail image blocks that Claude can see for description writing.
+compresses them, and runs AI vision analysis (image type, colors, effects,
+skin tone, lighting, alt text). Returns structured analysis data as JSON.
 
 Use this before writing product descriptions or building previews. The analysis
 identifies bottle shots vs swatches, extracts dominant colors and polish effects,
@@ -158,8 +145,6 @@ folder are processed (prevents cross-product image mixups).`,
       maxImages: z.number().optional().default(50).describe("Max images to successfully analyze (default 50). Errors don't count against this cap."),
     },
     async ({ folderId, productName, brand, vendorHint, maxImages }) => {
-      const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
-
       // Get folder metadata
       let folderName: string;
       try {
@@ -187,14 +172,10 @@ folder are processed (prevents cross-product image mixups).`,
       const cap = maxImages ?? 50;
       const context = { productName, brand, vendorHint };
 
-      // Concurrency tuned for deployment environment:
-      // - Render Starter (512MB): use 1
-      // - Home server (8GB+): use 8-10
-      // Bottleneck is Gemini API latency (~10s/image), not CPU/RAM.
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(allFiles, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${allFiles.length}: ${file.name}`);
-        return processImage(file, context, 80, 60);
+        return processImage(file, context);
       });
 
       const results: AnalyzedImage[] = [];
@@ -202,7 +183,6 @@ folder are processed (prevents cross-product image mixups).`,
       const lowConfidence: Array<{ fileId: string; filename: string; confidence: number; reason: string }> = [];
       let skippedAfterCap = 0;
 
-      // Collect results and assign SEO filenames (position is 1-indexed)
       let position = 0;
       for (const p of processed) {
         if (p.result) {
@@ -232,7 +212,6 @@ folder are processed (prevents cross-product image mixups).`,
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       console.log(`[analyze] Complete: ${results.length} analyzed, ${errors.length} errors, ${elapsed}s elapsed`);
 
-      // Build summary JSON (without thumbnail base64 — those go as image blocks)
       const summary = {
         folderId,
         folderName,
@@ -255,17 +234,13 @@ folder are processed (prevents cross-product image mixups).`,
           observedEffects: r.analysis.observedEffects,
           altText: r.analysis.altText,
           confidence: r.analysis.confidence,
-          thumbnailDataUrl: `data:image/jpeg;base64,${r.thumbnailBase64}`,
         })),
         ...(skippedAfterCap > 0 ? { skippedAfterCap } : {}),
         ...(lowConfidence.length > 0 ? { lowConfidence } : {}),
         ...(errors.length > 0 ? { errors } : {}),
       };
 
-      // Single JSON block with everything — thumbnails are in thumbnailDataUrl fields
-      content.push({ type: "text", text: JSON.stringify(summary, null, 2) });
-
-      return { content };
+      return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }] };
     },
   );
 }
