@@ -255,6 +255,12 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
       // Collections
       collectionsToJoin: z.array(z.string()).optional().describe("Collection GIDs to add the product to"),
 
+      // Swatchers (metaobject GIDs for custom.swatcher_list)
+      swatchers: z.array(z.string()).optional().describe("Swatcher metaobject GIDs to link via custom.swatcher_list"),
+
+      // Publishing
+      publish: z.boolean().optional().default(false).describe("If true, publish to Online Store after creation. Product is still DRAFT status."),
+
       // US market translation
       usTranslation: z.object({
         metaTitle: z.string(),
@@ -315,7 +321,18 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
         };
         if (params.templateSuffix) createInput.templateSuffix = params.templateSuffix;
         if (params.collectionsToJoin?.length) createInput.collectionsToJoin = params.collectionsToJoin;
-        if (params.metafields.length > 0) createInput.metafields = params.metafields;
+
+        // Build metafields: include swatchers if provided
+        const allMetafields = [...params.metafields];
+        if (params.swatchers?.length) {
+          allMetafields.push({
+            namespace: "custom",
+            key: "swatcher_list",
+            value: JSON.stringify(params.swatchers),
+            type: "list.metaobject_reference",
+          });
+        }
+        if (allMetafields.length > 0) createInput.metafields = allMetafields;
 
         const createRes = await q<{
           productCreate: {
@@ -347,6 +364,48 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
         const productId = product.id;
         const variantId = product.variants.edges[0]?.node?.id;
         console.log(`[create] Created product ${productId} (handle: ${product.handle})`);
+
+        // ---------------------------------------------------------------
+        // Step 1b: Publish to sales channels (if requested)
+        // ---------------------------------------------------------------
+        if (params.publish) {
+          console.log("[create] Step 1b: Publishing to Online Store");
+          try {
+            // First, find the Online Store publication
+            const pubRes = await q<{
+              publications: { edges: Array<{ node: { id: string; name: string } }> };
+            }>(
+              `query { publications(first: 20) { edges { node { id name } } } }`,
+            );
+            const publications = pubRes.data?.publications?.edges ?? [];
+            const onlineStore = publications.find((p) =>
+              p.node.name === "Online Store" || p.node.name.includes("Online Store"),
+            );
+
+            if (onlineStore) {
+              await q<{
+                publishablePublish: {
+                  userErrors: Array<{ field: string[]; message: string }>;
+                };
+              }>(
+                `mutation($id: ID!, $input: [PublicationInput!]!) {
+                  publishablePublish(id: $id, input: $input) {
+                    userErrors { field message }
+                  }
+                }`,
+                {
+                  id: productId,
+                  input: [{ publicationId: onlineStore.node.id }],
+                },
+              );
+              console.log(`[create] Published to ${onlineStore.node.name}`);
+            } else {
+              warnings.push("Could not find Online Store publication. Product created but not published to any sales channel.");
+            }
+          } catch (err) {
+            warnings.push(`Publishing failed: ${err}. Product created but not on any sales channel.`);
+          }
+        }
 
         // ---------------------------------------------------------------
         // Step 2: productUpdate — set category

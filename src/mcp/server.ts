@@ -23,6 +23,8 @@ import {
 import { registerAnalyticsGateway, registerSearchConsoleGateway, registerIndexingGateway, registerTagManagerGateway } from "./gateway-google.js";
 import { registerImageTools } from "./tools/images.js";
 import { registerIngestTools } from "./tools/ingest.js";
+import { registerDiscoverFolderTool } from "./tools/discover-folder.js";
+import { registerShopifyPreflightTool } from "./tools/shopify-preflight.js";
 import { registerCreateProductTool } from "./tools/create-product.js";
 import { registerTranslateTool } from "./tools/translate.js";
 import { registerPrompts } from "./prompts.js";
@@ -146,11 +148,15 @@ use the shopify_* tools.`,
   registerIndexingGateway(server);       // Indexing: notify_updated, notify_removed, get_status, batch_update
   registerTagManagerGateway(server);     // GTM: tags, triggers, variables, versioning, publishing
 
+  // Product ingestion tools (conversational flow)
+  registerDiscoverFolderTool(server);    // discover_folder: scan Drive folder structure + product groupings
+  registerIngestTools(server);           // analyze_images: vision analysis on folder images (supports recursive)
+  registerShopifyPreflightTool(server);  // shopify_preflight: SKU, dedup, references, brand, all metaobjects + swatchers
+  registerCreateProductTool(server);     // create_product: full Shopify creation sequence + media + translation + publishing
+  registerTranslateTool(server);         // translate_for_market: US market SEO overrides
+
   // Utility tools
   registerImageTools(server);            // compress_images: download, compress to JPEG, return base64
-  registerIngestTools(server);           // analyze_images + ingest_product: Drive folder → vision analysis + Shopify preflight
-  registerCreateProductTool(server);     // create_product: full Shopify creation sequence + media upload + translation
-  registerTranslateTool(server);         // translate_for_market: US market SEO overrides
 
   // Prompts (pre-built workflows)
   registerPrompts(server);
