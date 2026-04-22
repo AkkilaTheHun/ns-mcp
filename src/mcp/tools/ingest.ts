@@ -339,6 +339,7 @@ for approval, then call create_product to execute.`,
       await reportProgress(`Starting preflight: "${title}" by ${vendor} (${stockType})`);
 
       // Resolve shop domain for Shopify queries.
+      // NEVER silently fall back to a dev store — error if ambiguous.
       let shop: string | undefined;
       const sessionId = getCurrentSessionId();
       if (sessionId) shop = getSessionShop(sessionId);
@@ -346,13 +347,23 @@ for approval, then call create_product to execute.`,
         const shopDomains = [...config.shops.keys()];
         if (shopDomains.length === 1) {
           shop = shopDomains[0];
-        } else if (config.defaultShop) {
-          shop = config.defaultShop;
+        } else if (shopDomains.length > 1) {
+          // Multiple shops: pick the non-dev one if there's exactly one
+          const prodShops = shopDomains.filter((d) => !d.includes("-dev"));
+          if (prodShops.length === 1) {
+            shop = prodShops[0];
+          } else {
+            const available = shopDomains.join(", ");
+            return {
+              content: [{ type: "text" as const, text: `Multiple shops available (${available}). Use shopify_shop(action: 'select') to choose one first.` }],
+              isError: true,
+            };
+          }
         }
       }
       if (!shop) {
         return {
-          content: [{ type: "text" as const, text: "No shop selected. Use shopify_shop(action: 'select') to choose a shop first." }],
+          content: [{ type: "text" as const, text: "No shop configured. Check SHOPS environment variable." }],
           isError: true,
         };
       }
@@ -379,12 +390,16 @@ for approval, then call create_product to execute.`,
         await reportProgress(`Collection folder: ${subfolders.length} subfolder(s) found. Searching for "${title}" images...`);
 
         const titleLower = title.toLowerCase().trim();
+        const discoveredProducts = new Set<string>(); // Track all product names found
 
         for (const sub of subfolders) {
           // Check if subfolder has its own subfolders (per-product folders like Suzie/Blazing Evening Sky/)
           const subSubs = await listSubfolders(sub.id);
 
           if (subSubs.length > 0) {
+            // Record all product folder names for discovery
+            for (const ss of subSubs) discoveredProducts.add(ss.name.trim());
+
             // Look for a subfolder matching the product title
             const match = subSubs.find((ss) =>
               ss.name.toLowerCase().trim() === titleLower ||
@@ -401,23 +416,46 @@ for approval, then call create_product to execute.`,
             for (const img of imgs) {
               const base = img.name.replace(/\.[^.]+$/, "")
                 .replace(/[\s_-]+\d+\s*$/, "")
-                .trim()
-                .toLowerCase();
-              if (base === titleLower || base.includes(titleLower) || titleLower.includes(base)) {
+                .trim();
+
+              // Record product name for discovery
+              if (base && !/^(IMG|DSC|DSCN|DSCF|P\d|Screenshot|Photo)/i.test(base)) {
+                discoveredProducts.add(base);
+              }
+
+              if (base.toLowerCase() === titleLower ||
+                  base.toLowerCase().includes(titleLower) ||
+                  titleLower.includes(base.toLowerCase())) {
                 productFiles.push(img);
               }
             }
           }
         }
 
-        // Also grab direct images from the top-level folder (collection shots)
-        const directImages = await listFolderImages(folderId);
-        // Only include collection-level images if they seem related to this product
-        // (usually they're group shots — skip them for individual product ingestion)
-        if (productFiles.length === 0 && directImages.length > 0) {
-          // Fallback: if no product-specific images found in subfolders, use direct images
-          productFiles = directImages;
-          warnings.push(`No images matching "${title}" found in subfolders. Using ${directImages.length} top-level image(s) as fallback.`);
+        // If no product-specific images found, return discovery info instead of fallback
+        if (productFiles.length === 0) {
+          if (discoveredProducts.size > 0) {
+            const productList = [...discoveredProducts].sort();
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "collection_folder",
+                  message: `"${title}" doesn't match any product in this folder. This appears to be a collection folder containing ${productList.length} product(s).`,
+                  discoveredProducts: productList,
+                  folderName,
+                  instruction: `Call ingest_product once per product using the exact names above. Use the same folderId — the tool will find each product's images across the swatcher subfolders.`,
+                }, null, 2),
+              }],
+              isError: true,
+            };
+          }
+
+          // Truly empty — no products found anywhere
+          return {
+            content: [{ type: "text" as const, text: `No images found for "${title}" in folder "${folderName}" (${folderId}). Checked ${subfolders.length} subfolder(s).` }],
+            isError: true,
+          };
         }
 
         await reportProgress(`Found ${productFiles.length} images for "${title}" across ${subfolders.length} subfolder(s)`);

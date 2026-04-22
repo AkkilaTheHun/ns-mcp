@@ -190,8 +190,12 @@ US Market GID: gid://shopify/Market/2190246041`,
         if (sessionId) shop = getSessionShop(sessionId);
         if (!shop) {
           const shopDomains = [...config.shops.keys()];
-          if (shopDomains.length === 1) shop = shopDomains[0];
-          else if (config.defaultShop) shop = config.defaultShop;
+          if (shopDomains.length === 1) {
+            shop = shopDomains[0];
+          } else if (shopDomains.length > 1) {
+            const prodShops = shopDomains.filter((d) => !d.includes("-dev"));
+            if (prodShops.length === 1) shop = prodShops[0];
+          }
         }
         const result = await registerTranslation(resourceId, marketId, translations, shop);
         return {

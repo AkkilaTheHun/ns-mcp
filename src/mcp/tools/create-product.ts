@@ -43,8 +43,12 @@ function resolveShop(): string {
   }
   const shopDomains = [...config.shops.keys()];
   if (shopDomains.length === 1) return shopDomains[0];
-  if (config.defaultShop) return config.defaultShop;
-  throw new Error("No shop selected. Use shopify_shop(action: 'select') to choose a shop first.");
+  if (shopDomains.length > 1) {
+    const prodShops = shopDomains.filter((d) => !d.includes("-dev"));
+    if (prodShops.length === 1) return prodShops[0];
+    throw new Error(`Multiple shops available (${shopDomains.join(", ")}). Use shopify_shop(action: 'select') to choose one first.`);
+  }
+  throw new Error("No shop configured. Check SHOPS environment variable.");
 }
 
 function extractId(gid: string): string {

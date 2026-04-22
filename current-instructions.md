@@ -92,6 +92,24 @@ Before doing ANY tool calls for a product, ask the user: **preorder or in-stock?
 
 After `ingest_product` returns, you have everything needed to write descriptions, build SEO, and present the preview. Do not make additional Shopify queries unless the ingest result is missing something specific.
 
+### Collection folder discovery
+
+When the user provides a folder that contains a collection (not a single product):
+
+1. **Call `ingest_product` with the folder ID and the folder name as the title.** If the title doesn't match any product images, the tool returns `error: "collection_folder"` with a `discoveredProducts` array listing all product names found in the subfolders.
+2. **Use the discovered product names** to call `ingest_product` once per product, using the SAME folder ID. The tool will find each product's images by matching filenames across all swatcher subfolders.
+3. **Do NOT explore the Drive folder yourself.** Do not list subfolders, check filenames, or try to understand the folder structure. The tool does this internally.
+
+Example flow:
+```
+User provides: folder ID for "Harvest Time" collection
+→ ingest_product(folderId, title: "Harvest Time", vendor: "Chamaeleon") 
+→ Returns: error "collection_folder", discoveredProducts: ["Blazing Evening Sky", "Pumpkin Fields", "Wine Festival", "Big Walnut", "Grape-Full"]
+→ ingest_product(folderId, title: "Blazing Evening Sky", vendor: "Chamaeleon")
+→ Returns: full preflight data with images from Yuliia/, Trusha/, Suzie/ subfolders
+→ Repeat for each product
+```
+
 ### Multi-product batching
 
 When the user requests multiple products in one session (e.g., a collection drop):
