@@ -9,6 +9,7 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 | Tool | Purpose | When to call |
 |------|---------|-------------|
 | `discover_folder` | Scan Drive folder structure, list files, group by product | First. Understand what you're working with. |
+| `fetch_vendor_page` | Scrape vendor website for product data, descriptions, pricing | When you have a vendor URL. Auto-detects Shopify vs HTML. |
 | `analyze_images` | Vision analysis on images (supports recursive folder scan) | After discover. Get colors, effects, alt text for all images. |
 | `shopify_preflight` | SKU, dedup, references, brand, all metaobjects + swatchers | In parallel with analyze_images or after. |
 | `create_product` | Full Shopify creation (7 steps + publishing + swatchers) | After user approves the preview. |
@@ -16,9 +17,10 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 
 ### Conversational flow
 
-**Phase 1: Discover** (1 tool call)
+**Phase 1: Discover** (1-2 tool calls)
 - Ask the user: preorder or in-stock?
 - Call `discover_folder` with the Drive folder ID
+- If you have a vendor website URL, call `fetch_vendor_page` to get vendor descriptions, pricing, and color details. For Shopify vendors, use `query` to search (e.g., `fetch_vendor_page(url, query: "Harvest Time")`). For non-Shopify sites, fetch specific product pages.
 - Discuss what you found: "This looks like a collection folder with 5 products across 3 swatchers..."
 - Identify products, swatcher names, any issues (unclassified images, unusual structure)
 

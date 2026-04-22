@@ -27,6 +27,7 @@ import { registerDiscoverFolderTool } from "./tools/discover-folder.js";
 import { registerShopifyPreflightTool } from "./tools/shopify-preflight.js";
 import { registerCreateProductTool } from "./tools/create-product.js";
 import { registerTranslateTool } from "./tools/translate.js";
+import { registerFetchVendorTool } from "./tools/fetch-vendor.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -154,6 +155,9 @@ use the shopify_* tools.`,
   registerShopifyPreflightTool(server);  // shopify_preflight: SKU, dedup, references, brand, all metaobjects + swatchers
   registerCreateProductTool(server);     // create_product: full Shopify creation sequence + media + translation + publishing
   registerTranslateTool(server);         // translate_for_market: US market SEO overrides
+
+  // Vendor research
+  registerFetchVendorTool(server);       // fetch_vendor_page: scrape vendor sites for product data (Shopify JSON + HTML)
 
   // Utility tools
   registerImageTools(server);            // compress_images: download, compress to JPEG, return base64
