@@ -263,14 +263,22 @@ folder are processed (prevents cross-product image mixups).`,
   server.tool(
     "ingest_product",
     `Full product ingestion preflight. Runs image analysis AND Shopify lookups
-in parallel server-side, returning everything Claude needs to write descriptions,
+in parallel server-side, returning everything needed to write descriptions,
 build SEO, and present a preview. One call replaces ~15 individual tool calls.
 
-Returns: image analysis, next SKU, duplicate check, config + style references,
-brand metaobject, available colors/finishes/polish-types, pricing, taxonomy.
+HANDLES COLLECTION FOLDERS: If folderId points to a collection folder with
+swatcher subfolders (e.g., Yuliia/, Trusha/, Suzie/), the tool automatically
+traverses all subfolders and finds images matching the product title by filename
+(e.g., "Blazing Evening Sky_1.jpg"). You do NOT need to reorganize the folder
+or create per-product folders. Just pass the collection folder ID + the product
+title and the tool finds the right images across all subfolders.
 
-After receiving the result, Claude writes descriptions + SEO, presents preview
-to the user for approval, then calls create_product to execute.`,
+Returns: image analysis (only for matching images), next SKU, duplicate check,
+config + style references, brand metaobject, available colors/finishes/polish-types,
+pricing, taxonomy, folder structure type (flat vs collection).
+
+After receiving the result, write descriptions + SEO, present preview to user
+for approval, then call create_product to execute.`,
     {
       folderId: z.string().describe("Google Drive folder ID containing product images"),
       vendor: z.string().describe("Brand/vendor name (e.g. 'Cadillacquer')"),

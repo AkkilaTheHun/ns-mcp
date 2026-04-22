@@ -20,7 +20,17 @@
 - All color, finish, and polish-type metaobject lists
 - Pricing from brand history
 
+**`ingest_product` handles collection folders automatically.** If the folder has swatcher subfolders (e.g., Yuliia/, Trusha/, Suzie/) with images spread across them, the tool traverses ALL subfolders and finds images matching the product title by filename. You do NOT need to:
+- Create per-product folders
+- Reorganize the Drive folder
+- Run separate queries per subfolder
+- Use `analyze_images` directly
+
+Just pass the collection folder ID + the product title. The tool finds the right images.
+
 **Do NOT manually query Shopify for any of the above.** `ingest_product` returns it all. If you find yourself calling `shopify_graphql`, `shopify_products(search)`, or `shopify_metaobjects(list)` for data that `ingest_product` already returns, you are doing it wrong. Stop and use `ingest_product` instead.
+
+**Do NOT manually explore Drive folders.** You do not need to list subfolders, check filenames, or understand the folder structure. `ingest_product` handles folder traversal internally. Give it the folder ID the user provided and let it work.
 
 **The only time to use individual Shopify tools during ingestion** is when `ingest_product` returned incomplete data for a specific field and you need to fill the gap.
 
