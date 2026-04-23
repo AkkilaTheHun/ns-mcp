@@ -4,20 +4,6 @@ import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, listSubfolders, type DriveFile } from "../../google/drive.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
 
-const HEIC_MIMETYPES = new Set(["image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"]);
-
-/** Lazy-load heic-convert only when needed. */
-let _heicConvert: ((opts: { buffer: Buffer; format: string; quality: number }) => Promise<ArrayBuffer>) | undefined;
-async function convertHeic(buffer: Buffer): Promise<Buffer> {
-  if (!_heicConvert) {
-    // @ts-expect-error — heic-convert has no type declarations
-    const mod = await import("heic-convert");
-    _heicConvert = mod.default ?? mod;
-  }
-  const result = await _heicConvert!({ buffer, format: "JPEG", quality: 0.9 });
-  return Buffer.from(result);
-}
-
 /** Cache for URL-downloaded buffers so processImage can access them by "fileId" (which is the URL). */
 const urlBufferCache = new Map<string, Buffer>();
 
@@ -82,27 +68,20 @@ async function processImage(
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Check URL buffer cache first, fall back to Drive download
-    let raw = urlBufferCache.get(file.id) ?? await downloadFile(file.id);
+    const raw = urlBufferCache.get(file.id) ?? await downloadFile(file.id);
     urlBufferCache.delete(file.id); // Clean up after use
     const rawSizeKB = Math.round(raw.length / 1024);
     console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
-    // Convert HEIC/HEIF to JPEG before Sharp
-    const isHeic = HEIC_MIMETYPES.has(file.mimeType) || /\.heic$/i.test(file.name);
-    if (isHeic) {
-      console.log(`[analyze] Converting HEIC → JPEG: ${file.name}`);
-      raw = await convertHeic(raw);
-      console.log(`[analyze] HEIC converted: ${rawSizeKB} KB → ${Math.round(raw.length / 1024)} KB`);
-    }
-
-    // Resize to 900px JPEG for Gemini analysis
+    // Convert to JPEG for Gemini analysis — no resize, no quality loss.
+    // Sharp handles HEIC/HEIF/PNG/WebP natively, outputs clean JPEG.
+    // Full resolution preserves fine details (micro-glitter, subtle flakies, shimmer shifts).
     const analysisBuffer = await sharp(raw, { failOn: "none" })
       .rotate()
-      .resize({ width: 900, withoutEnlargement: true })
-      .jpeg({ quality: 75, mozjpeg: true })
+      .jpeg({ quality: 95 })
       .toBuffer();
 
-    console.log(`[analyze] Compressed ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB`);
+    console.log(`[analyze] Prepared ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB`);
 
     const analysis = await analyzeImage(
       analysisBuffer.toString("base64"),
