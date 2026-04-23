@@ -83,32 +83,45 @@ interface ShopifyProduct {
   images: Array<{ src: string; alt: string | null }>;
 }
 
+const BROWSER_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/json,application/xhtml+xml",
+  "Accept-Language": "en-US,en;q=0.9",
+};
+
+async function shopifyFetch(url: string): Promise<Response> {
+  return fetch(url, {
+    signal: AbortSignal.timeout(10000),
+    headers: BROWSER_HEADERS,
+  });
+}
+
 async function tryShopify(
   baseUrl: string,
   query?: string,
 ): Promise<{ type: "shopify"; products: ShopifyProduct[] } | null> {
   try {
-    const testRes = await fetch(`${baseUrl}/products.json?limit=1`, {
-      signal: AbortSignal.timeout(5000),
-    });
+    const testRes = await shopifyFetch(`${baseUrl}/products.json?limit=1`);
     if (!testRes.ok) return null;
 
     // It's a Shopify store. Fetch products.
     if (query) {
-      // Search for specific products
+      // Search for specific products — paginate with delay to avoid rate limits
       const allProducts: ShopifyProduct[] = [];
       let page = 1;
       while (true) {
-        const res = await fetch(
-          `${baseUrl}/products.json?limit=250&page=${page}`,
-          { signal: AbortSignal.timeout(10000) },
-        );
-        if (!res.ok) break;
+        const res = await shopifyFetch(`${baseUrl}/products.json?limit=250&page=${page}`);
+        if (!res.ok) {
+          console.log(`[vendor] Shopify page ${page} returned ${res.status}, stopping pagination`);
+          break;
+        }
         const data = (await res.json()) as { products: ShopifyProduct[] };
         if (!data.products?.length) break;
         allProducts.push(...data.products);
         if (data.products.length < 250) break;
         page++;
+        // Small delay between pages to avoid rate limiting
+        if (page > 1) await new Promise((r) => setTimeout(r, 500));
       }
 
       const queryLower = query.toLowerCase();
@@ -120,9 +133,7 @@ async function tryShopify(
       return { type: "shopify", products: matched };
     } else {
       // Just return first page
-      const res = await fetch(`${baseUrl}/products.json?limit=50`, {
-        signal: AbortSignal.timeout(10000),
-      });
+      const res = await shopifyFetch(`${baseUrl}/products.json?limit=50`);
       const data = (await res.json()) as { products: ShopifyProduct[] };
       return { type: "shopify", products: data.products || [] };
     }
@@ -147,10 +158,7 @@ async function fetchHtml(
 }> {
   const res = await fetch(url, {
     signal: AbortSignal.timeout(15000),
-    headers: {
-      "User-Agent": "Mozilla/5.0 (compatible; NailStuffBot/1.0)",
-      Accept: "text/html",
-    },
+    headers: BROWSER_HEADERS,
   });
 
   if (!res.ok) {
