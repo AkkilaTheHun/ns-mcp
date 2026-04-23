@@ -18,6 +18,9 @@ async function convertHeic(buffer: Buffer): Promise<Buffer> {
   return Buffer.from(result);
 }
 
+/** Cache for URL-downloaded buffers so processImage can access them by "fileId" (which is the URL). */
+const urlBufferCache = new Map<string, Buffer>();
+
 interface AnalyzedImage {
   fileId: string;
   filename: string;
@@ -78,7 +81,9 @@ async function processImage(
   context: { productName: string; brand: string; vendorHint?: string },
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
-    let raw = await downloadFile(file.id);
+    // Check URL buffer cache first, fall back to Drive download
+    let raw = urlBufferCache.get(file.id) ?? await downloadFile(file.id);
+    urlBufferCache.delete(file.id); // Clean up after use
     const rawSizeKB = Math.round(raw.length / 1024);
     console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
@@ -127,37 +132,30 @@ async function processImage(
 export function registerIngestTools(server: McpServer): void {
   server.tool(
     "analyze_images",
-    `Analyze product images from a Google Drive folder. Downloads, compresses via Sharp,
-and runs AI vision analysis (Gemini) on each image.
+    `Analyze product images via AI vision (Gemini). Downloads, compresses via Sharp,
+and returns structured analysis per image.
 
-Supports two modes:
-- recursive: false (default) — only direct children of the folder
-- recursive: true — traverses ALL subfolders. Each image is tagged with its
-  subfolder path so you know which swatcher/product folder it came from.
+Accepts TWO input modes (provide one or both):
+- folderId: Google Drive folder ID. Supports recursive: true to traverse subfolders.
+- urls: Array of public image URLs (CDN, vendor sites, Shopify, etc.)
 
-ALL images are processed — including generic filenames like IMG_####. Nothing
-is filtered or skipped. Use discover_folder first to understand the structure,
-then call this with the folder ID to analyze everything.
+ALL images are processed — nothing is filtered or skipped.
 
 Returns per-image: type, colors, effects, skin tone, lighting, alt text,
-confidence score, original filename, subfolder path.`,
+confidence score, original filename, subfolder path (Drive) or source URL.`,
     {
-      folderId: z.string().describe("Google Drive folder ID to analyze"),
+      folderId: z.string().optional().describe("Google Drive folder ID to analyze"),
+      urls: z.array(z.string()).optional().describe("Public image URLs to analyze (CDN, vendor sites, etc.)"),
       productName: z.string().describe("Product/shade name for vision context (e.g. 'Lavender Sunset')"),
       brand: z.string().describe("Brand name for vision context (e.g. 'Cadillacquer')"),
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
-      recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders)"),
+      recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders, Drive only)"),
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
     },
-    async ({ folderId, productName, brand, vendorHint, recursive, maxImages }) => {
-      // Get folder metadata
-      let folderName: string;
-      try {
-        const meta = await getFolderMeta(folderId);
-        folderName = meta.name;
-      } catch (err) {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages }) => {
+      if (!folderId && (!urls || urls.length === 0)) {
         return {
-          content: [{ type: "text" as const, text: `Error accessing folder ${folderId}: ${err}` }],
+          content: [{ type: "text" as const, text: "Provide either folderId (Google Drive) or urls (public image URLs), or both." }],
           isError: true,
         };
       }
@@ -165,37 +163,82 @@ confidence score, original filename, subfolder path.`,
       // Collect all images (with subfolder path)
       interface TaggedFile extends DriveFile { subfolder: string | null }
       const allFiles: TaggedFile[] = [];
+      let folderName = "(urls)";
 
-      if (recursive) {
-        // Recursive: traverse subfolders
-        const subs = await listSubfolders(folderId);
-        // Direct images first
-        const directImgs = await listFolderImages(folderId);
-        for (const f of directImgs) allFiles.push({ ...f, subfolder: null });
+      // Source 1: Google Drive folder
+      if (folderId) {
+        try {
+          const meta = await getFolderMeta(folderId);
+          folderName = meta.name;
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error accessing folder ${folderId}: ${err}` }],
+            isError: true,
+          };
+        }
 
-        for (const sub of subs) {
-          const subSubs = await listSubfolders(sub.id);
-          if (subSubs.length > 0) {
-            // Per-product subfolders
-            for (const ps of subSubs) {
-              const imgs = await listFolderImages(ps.id);
-              for (const f of imgs) allFiles.push({ ...f, subfolder: `${sub.name}/${ps.name}` });
+        if (recursive) {
+          const subs = await listSubfolders(folderId);
+          const directImgs = await listFolderImages(folderId);
+          for (const f of directImgs) allFiles.push({ ...f, subfolder: null });
+
+          for (const sub of subs) {
+            const subSubs = await listSubfolders(sub.id);
+            if (subSubs.length > 0) {
+              for (const ps of subSubs) {
+                const imgs = await listFolderImages(ps.id);
+                for (const f of imgs) allFiles.push({ ...f, subfolder: `${sub.name}/${ps.name}` });
+              }
+            } else {
+              const imgs = await listFolderImages(sub.id);
+              for (const f of imgs) allFiles.push({ ...f, subfolder: sub.name });
             }
-          } else {
-            // Flat swatcher folder
-            const imgs = await listFolderImages(sub.id);
-            for (const f of imgs) allFiles.push({ ...f, subfolder: sub.name });
+          }
+        } else {
+          const imgs = await listFolderImages(folderId);
+          for (const f of imgs) allFiles.push({ ...f, subfolder: null });
+        }
+      }
+
+      // Source 2: Public URLs — download and create synthetic DriveFile entries
+      if (urls?.length) {
+        for (const url of urls) {
+          try {
+            const filename = decodeURIComponent(url.split("/").pop()?.split("?")[0] ?? "image.jpg");
+            const res = await fetch(url, {
+              signal: AbortSignal.timeout(15000),
+              headers: {
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+              },
+            });
+            if (!res.ok) {
+              console.error(`[analyze] URL fetch failed ${url}: HTTP ${res.status}`);
+              continue;
+            }
+            const buffer = Buffer.from(await res.arrayBuffer());
+            const mimeType = res.headers.get("content-type") ?? "image/jpeg";
+
+            // Store the buffer for processImage to use via downloadFile override
+            // We use the URL as the fileId so it's traceable
+            urlBufferCache.set(url, buffer);
+
+            allFiles.push({
+              id: url,
+              name: filename,
+              mimeType,
+              size: buffer.length,
+              parentId: "(url)",
+              subfolder: null,
+            });
+          } catch (err) {
+            console.error(`[analyze] URL fetch error ${url}: ${err}`);
           }
         }
-      } else {
-        // Non-recursive: direct children only
-        const imgs = await listFolderImages(folderId);
-        for (const f of imgs) allFiles.push({ ...f, subfolder: null });
       }
 
       if (allFiles.length === 0) {
         return {
-          content: [{ type: "text" as const, text: `No images found in folder "${folderName}" (${folderId})${recursive ? " (recursive)" : ""}` }],
+          content: [{ type: "text" as const, text: `No images found to analyze.` }],
           isError: true,
         };
       }
@@ -255,11 +298,11 @@ confidence score, original filename, subfolder path.`,
         totalAnalyzed: results.length,
         processingTimeSeconds: Number(elapsed),
         images: results.map((r) => ({
-          fileId: r.fileId,
+          fileId: r.parentFolderId === "(url)" ? undefined : r.fileId,
+          sourceUrl: r.parentFolderId === "(url)" ? r.fileId : undefined,
           filename: r.filename,
           proposedFilename: r.proposedFilename,
           subfolder: r.subfolder,
-          parentFolderId: r.parentFolderId,
           originalSizeKB: Math.round(r.originalSizeBytes / 1024),
           imageType: r.analysis.imageType,
           lightingCondition: r.analysis.lightingCondition,
