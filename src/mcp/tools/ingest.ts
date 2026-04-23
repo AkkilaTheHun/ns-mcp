@@ -73,12 +73,13 @@ async function processImage(
     const rawSizeKB = Math.round(raw.length / 1024);
     console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
-    // Convert to JPEG for Gemini analysis — no resize, no quality loss.
-    // Sharp handles HEIC/HEIF/PNG/WebP natively, outputs clean JPEG.
-    // Full resolution preserves fine details (micro-glitter, subtle flakies, shimmer shifts).
+    // Resize to 900px + high-quality JPEG for Gemini analysis.
+    // Sharp handles HEIC/HEIF/PNG/WebP natively.
+    // Quality 92 avoids compression artifacts that wash out fine glitter/flakies.
     const analysisBuffer = await sharp(raw, { failOn: "none" })
       .rotate()
-      .jpeg({ quality: 95 })
+      .resize({ width: 900, withoutEnlargement: true })
+      .jpeg({ quality: 92 })
       .toBuffer();
 
     console.log(`[analyze] Prepared ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB`);
