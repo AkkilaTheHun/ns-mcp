@@ -165,15 +165,54 @@ async function fetchHtml(
     throw new Error(`HTTP ${res.status} fetching ${url}`);
   }
 
-  const html = await res.text();
-  const meta = extractMeta(html);
-  const text = stripHtml(html);
+  const body = await res.text();
+  const contentType = res.headers.get("content-type") ?? "";
+
+  // Handle XML sitemaps — return structured data instead of raw XML
+  if (contentType.includes("xml") || url.includes("sitemap") || body.trimStart().startsWith("<?xml")) {
+    const locs = (body.match(/<loc>([^<]+)<\/loc>/g) || []).map((m) => m.replace(/<\/?loc>/g, ""));
+    const isSitemapIndex = body.includes("<sitemapindex");
+
+    if (isSitemapIndex) {
+      // Sitemap index — links to sub-sitemaps
+      const sitemaps = locs.map((loc) => {
+        const type = loc.includes("product") ? "products"
+          : loc.includes("collection") ? "collections"
+          : loc.includes("page") ? "pages"
+          : loc.includes("blog") ? "blogs"
+          : "other";
+        return { url: loc, type };
+      });
+      return {
+        type: "html" as const,
+        url: res.url,
+        meta: { title: "Sitemap Index" },
+        text: `Sitemap index with ${sitemaps.length} sub-sitemaps:\n\n${sitemaps.map((s) => `[${s.type}] ${s.url}`).join("\n")}`,
+        links: locs,
+        images: [],
+      };
+    } else {
+      // Sub-sitemap — list of URLs
+      return {
+        type: "html" as const,
+        url: res.url,
+        meta: { title: `Sitemap (${locs.length} URLs)` },
+        text: `${locs.length} URLs found:\n\n${locs.join("\n")}`,
+        links: locs,
+        images: [],
+      };
+    }
+  }
+
+  // Standard HTML parsing
+  const meta = extractMeta(body);
+  const text = stripHtml(body);
   const lines = text.split("\n").map((l) => l.trim()).filter((l) => l.length > 2);
-  const links = extractLinks(html, new URL(url).origin);
-  const images = extractImageUrls(html);
+  const links = extractLinks(body, new URL(url).origin);
+  const images = extractImageUrls(body);
 
   // Check if the page is JS-rendered (very little visible text)
-  const isJsRendered = lines.length < 10 && html.length > 10000;
+  const isJsRendered = lines.length < 10 && body.length > 10000;
 
   return {
     type: "html",

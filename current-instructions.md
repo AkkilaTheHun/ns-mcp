@@ -9,7 +9,7 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 | Tool | Purpose | When to call |
 |------|---------|-------------|
 | `discover_folder` | Scan Drive folder structure, list files, group by product | First. Understand what you're working with. |
-| `fetch_vendor_page` | Scrape vendor website for product data, descriptions, pricing | When you have a vendor URL. Auto-detects Shopify vs HTML. |
+| `fetch_vendor_page` | Fetch vendor website data: sitemaps, collections, products, HTML pages | When you have a vendor URL. Navigate: sitemap -> collections -> products. |
 | `analyze_images` | Vision analysis on images (supports recursive folder scan) | After discover. Get colors, effects, alt text for all images. |
 | `shopify_preflight` | SKU, dedup, references, brand, all metaobjects + swatchers | In parallel with analyze_images or after. |
 | `create_product` | Full Shopify creation (7 steps + publishing + swatchers) | After user approves the preview. |
@@ -17,11 +17,15 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 
 ### Conversational flow
 
-**Phase 1: Discover** (1-2 tool calls)
+**Phase 1: Discover** (1-3 tool calls)
 - Ask the user: preorder or in-stock?
 - Call `discover_folder` with the Drive folder ID
-- If you have a vendor website URL, call `fetch_vendor_page` to get vendor descriptions, pricing, and color details. For Shopify vendors, use `query` to search (e.g., `fetch_vendor_page(url, query: "Harvest Time")`). For non-Shopify sites, fetch specific product pages.
-- Discuss what you found: "This looks like a collection folder with 5 products across 3 swatchers..."
+- If you have a vendor website URL, navigate it step by step:
+  1. `fetch_vendor_page(url: "https://vendor.com/sitemap.xml")` — get the sitemap index
+  2. Follow the collections sitemap URL to see available collections
+  3. `fetch_vendor_page(url: "https://vendor.com/collections/{name}/products.json?limit=250")` — get all products in the matching collection
+  - For non-Shopify sites, fetch specific product pages directly
+  - Discuss what you found with the user before proceeding
 - Identify products, swatcher names, any issues (unclassified images, unusual structure)
 
 **Phase 2: Analyze + Preflight** (2 tool calls, can run in parallel)
