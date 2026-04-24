@@ -96,8 +96,12 @@ async function scanDropbox(sharedLink: string) {
 
   const allFiles: FolderFile[] = [];
   const productMap = new Map<string, { count: number; subfolders: Set<string> }>();
-  const swatcherFolders: Array<{ name: string; path: string; imageCount: number; hasSubfolders: boolean }> = [];
+  const swatcherFolders: Array<{ name: string; path: string; url?: string; imageCount: number; hasSubfolders: boolean }> = [];
   let unclassifiedCount = 0;
+
+  // Helper to build a Dropbox /home/ URL from a path
+  const toDropboxUrl = (path: string) =>
+    `https://www.dropbox.com/home/${encodeURIComponent(path.replace(/^\//, "")).replace(/%2F/g, "/")}`;
 
   // Direct images
   const directImages = await getImages("");
@@ -130,6 +134,7 @@ async function scanDropbox(sharedLink: string) {
     swatcherFolders.push({
       name: sub.name,
       path: sub.path,
+      url: toDropboxUrl(sub.path),
       imageCount: subImages.length,
       hasSubfolders: subSubs.length > 0,
     });
