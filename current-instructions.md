@@ -12,6 +12,7 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 | `fetch_vendor_page` | Fetch vendor website data: sitemaps, collections, products, HTML pages | When you have a vendor URL. Navigate: sitemap -> collections -> products. |
 | `analyze_images` | Vision analysis on images (supports recursive folder scan) | After discover. Get colors, effects, alt text for all images. |
 | `shopify_preflight` | SKU, dedup, references, brand, all metaobjects + swatchers | In parallel with analyze_images or after. |
+| `organize_images` | Create staging folders, copy images by shade, list state after review | When a collection has similar shades. User reviews in Drive/Dropbox before creation. |
 | `create_product` | Full Shopify creation (7 steps + publishing + swatchers) | After user approves the preview. |
 | `translate_for_market` | US market SEO override (standalone) | For backfilling existing products. create_product handles this for new products. |
 
@@ -39,6 +40,20 @@ Product ingestion uses a **conversational flow** with specialized tools for each
   - Match vision colors/effects to color and finish metaobjects
   - Flag any images that need attention (low confidence, unclassified)
   - Note if brand is new (needs setup) or existing
+
+**Phase 2b: Stage for review** (optional — use when shades are similar or vision results are uncertain)
+1. Call `organize_images(action: "create_staging", source, collectionName, shadeNames)` to create the staging folder structure
+2. Call `organize_images(action: "copy_to_shade", ...)` for each image, grouping by your best-guess shade. Include the swatcher handle from the subfolder name.
+3. Tell the user: "I've organized X images into Y shade folders. Please review in [Drive/Dropbox link] and drag any misidentified images to the right folder."
+4. Wait for the user to confirm they're done reviewing
+5. Call `organize_images(action: "list_staging")` to get the corrected groupings
+6. Use those groupings for product creation
+
+Staging folders are created in the user's own space:
+- Drive: under `NailStuff Staging/{Collection} - Staging/`
+- Dropbox: under `/NailStuff Staging/{Collection} - Staging/`
+
+Files are copied (never moved) from the source folder, with swatcher info appended to filenames.
 
 **Phase 3: Write + Preview** (no tool calls, just conversation)
 - Write product descriptions (CA + US) based on image analysis and vendor context

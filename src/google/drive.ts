@@ -11,7 +11,7 @@ function getDriveAuth(): GoogleAuth {
   if (!cachedDriveAuth) {
     cachedDriveAuth = new GoogleAuth({
       credentials: getServiceAccountKey(),
-      scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+      scopes: ["https://www.googleapis.com/auth/drive"],
       clientOptions: { subject: SUBJECT },
     });
   }
@@ -208,6 +208,77 @@ function extractProductName(filename: string): string | null {
     .trim();
 
   return cleaned.length > 0 ? cleaned : null;
+}
+
+// ---------------------------------------------------------------------------
+// Write operations
+// ---------------------------------------------------------------------------
+
+/** Create a folder in Google Drive. Returns the new folder's ID. */
+export async function createDriveFolder(name: string, parentId?: string): Promise<{ id: string; name: string }> {
+  const drive = getDrive();
+  const res = await drive.files.create({
+    requestBody: {
+      name,
+      mimeType: "application/vnd.google-apps.folder",
+      ...(parentId ? { parents: [parentId] } : {}),
+    },
+    fields: "id, name",
+  });
+  return { id: res.data.id!, name: res.data.name! };
+}
+
+/**
+ * Find or create a folder by name under a parent. Returns the folder ID.
+ * If the folder already exists, returns the existing one (no duplicate).
+ */
+export async function findOrCreateDriveFolder(name: string, parentId?: string): Promise<{ id: string; name: string; created: boolean }> {
+  const drive = getDrive();
+
+  // Search for existing folder with this name under the parent
+  const query = parentId
+    ? `name = '${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`
+    : `name = '${name.replace(/'/g, "\\'")}' and 'root' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+
+  const existing = await drive.files.list({ q: query, fields: "files(id, name)", pageSize: 1 });
+  if (existing.data.files?.length) {
+    return { id: existing.data.files[0].id!, name: existing.data.files[0].name!, created: false };
+  }
+
+  const created = await createDriveFolder(name, parentId);
+  return { ...created, created: true };
+}
+
+/** Copy a file to a new location with a new name. Returns the new file's ID. */
+export async function copyDriveFile(
+  fileId: string,
+  newName: string,
+  targetFolderId: string,
+): Promise<{ id: string; name: string }> {
+  const drive = getDrive();
+  const res = await drive.files.copy({
+    fileId,
+    requestBody: {
+      name: newName,
+      parents: [targetFolderId],
+    },
+    fields: "id, name",
+  });
+  return { id: res.data.id!, name: res.data.name! };
+}
+
+/** Move a file from one folder to another. */
+export async function moveDriveFile(
+  fileId: string,
+  fromFolderId: string,
+  toFolderId: string,
+): Promise<void> {
+  const drive = getDrive();
+  await drive.files.update({
+    fileId,
+    addParents: toFolderId,
+    removeParents: fromFolderId,
+  });
 }
 
 /** Get metadata for a folder (name, parents). */

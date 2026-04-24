@@ -28,6 +28,7 @@ import { registerShopifyPreflightTool } from "./tools/shopify-preflight.js";
 import { registerCreateProductTool } from "./tools/create-product.js";
 import { registerTranslateTool } from "./tools/translate.js";
 import { registerFetchVendorTool } from "./tools/fetch-vendor.js";
+import { registerOrganizeImagesTool } from "./tools/organize-images.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -153,6 +154,7 @@ use the shopify_* tools.`,
   registerDiscoverFolderTool(server);    // discover_folder: scan Drive folder structure + product groupings
   registerIngestTools(server);           // analyze_images: vision analysis on folder images (supports recursive)
   registerShopifyPreflightTool(server);  // shopify_preflight: SKU, dedup, references, brand, all metaobjects + swatchers
+  registerOrganizeImagesTool(server);    // organize_images: staging folders for shade review before creation
   registerCreateProductTool(server);     // create_product: full Shopify creation sequence + media + translation + publishing
   registerTranslateTool(server);         // translate_for_market: US market SEO overrides
 

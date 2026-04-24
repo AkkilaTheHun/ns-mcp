@@ -171,6 +171,80 @@ export async function listSharedSubfolders(
 }
 
 // ---------------------------------------------------------------------------
+// Write operations (own folder only — requires files.content.write scope)
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a folder in the user's own Dropbox.
+ * Creates parent folders automatically if they don't exist.
+ */
+export async function createDropboxFolder(path: string): Promise<{ path: string; name: string }> {
+  const res = await fetch(`${DROPBOX_API}/files/create_folder_v2`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ path, autorename: false }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    // Ignore "folder already exists" errors
+    if (body.includes("path/conflict/folder")) {
+      const name = path.split("/").pop() ?? path;
+      return { path, name };
+    }
+    throw new Error(`Dropbox create_folder failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+
+  const data = (await res.json()) as { metadata: { path_display: string; name: string } };
+  return { path: data.metadata.path_display, name: data.metadata.name };
+}
+
+/**
+ * Copy a file within the user's own Dropbox.
+ * to_path must include the full path with filename.
+ */
+export async function copyDropboxFile(
+  fromPath: string,
+  toPath: string,
+): Promise<{ path: string; name: string }> {
+  const res = await fetch(`${DROPBOX_API}/files/copy_v2`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ from_path: fromPath, to_path: toPath, autorename: true }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Dropbox copy failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+
+  const data = (await res.json()) as { metadata: { path_display: string; name: string } };
+  return { path: data.metadata.path_display, name: data.metadata.name };
+}
+
+/**
+ * Move a file within the user's own Dropbox.
+ */
+export async function moveDropboxFile(
+  fromPath: string,
+  toPath: string,
+): Promise<{ path: string; name: string }> {
+  const res = await fetch(`${DROPBOX_API}/files/move_v2`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ from_path: fromPath, to_path: toPath, autorename: true }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Dropbox move failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+
+  const data = (await res.json()) as { metadata: { path_display: string; name: string } };
+  return { path: data.metadata.path_display, name: data.metadata.name };
+}
+
+// ---------------------------------------------------------------------------
 // File download
 // ---------------------------------------------------------------------------
 
