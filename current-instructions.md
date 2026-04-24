@@ -51,6 +51,15 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 **Phase 4: Create** (1 tool call per product, after explicit user approval)
 - Call `create_product` with the finalized payload
 - Include swatcher GIDs, publishing preference, and US translation
+- **Media field mapping — use the right source field:**
+
+  | Image source | `analyze_images` returns | `create_product` media field |
+  |-------------|------------------------|---------------------------|
+  | Google Drive | `fileId` | `driveFileId` |
+  | Dropbox | `dropboxPath` | `dropboxPath` |
+  | Public URL | `sourceUrl` | `url` |
+
+  **Do NOT put Dropbox paths in `driveFileId`.** They are different fields.
 - Report: product title + admin link
 
 ### Key principles
