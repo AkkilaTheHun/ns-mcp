@@ -128,15 +128,20 @@ export function registerIngestTools(server: McpServer): void {
 and returns structured analysis per image.
 
 Accepts TWO input modes (provide one or both):
-- folderId: Google Drive folder ID. Supports recursive: true to traverse subfolders.
+- folderId: Google Drive folder ID OR Dropbox URL. Supports recursive: true to traverse subfolders.
 - urls: Array of public image URLs (CDN, vendor sites, Shopify, etc.)
 
 ALL images are processed — nothing is filtered or skipped.
 
+To analyze a SPECIFIC SUBFOLDER, pass its direct URL/ID as folderId.
+For Dropbox, use the subfolder URL from discover_folder (e.g.,
+"https://www.dropbox.com/home/Take%20It%20Easy/_always_polished_").
+Do NOT pass the parent folder URL if you only want one subfolder's images.
+
 Returns per-image: type, colors, effects, skin tone, lighting, alt text,
 confidence score, original filename, subfolder path (Drive) or source URL.`,
     {
-      folderId: z.string().optional().describe("Google Drive folder ID OR Dropbox shared link URL"),
+      folderId: z.string().optional().describe("Google Drive folder ID OR Dropbox URL (use subfolder URL from discover_folder to scope to a specific subfolder)"),
       urls: z.array(z.string()).optional().describe("Public image URLs to analyze (CDN, vendor sites, etc.)"),
       productName: z.string().describe("Product/shade name for vision context (e.g. 'Lavender Sunset')"),
       brand: z.string().describe("Brand name for vision context (e.g. 'Cadillacquer')"),
