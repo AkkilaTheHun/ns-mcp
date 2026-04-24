@@ -8,6 +8,9 @@ import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
 /** Cache for URL-downloaded buffers so processImage can access them by "fileId" (which is the URL). */
 const urlBufferCache = new Map<string, Buffer>();
 
+/** Dropbox download function, set per-invocation by the analyze_images handler. */
+let dropboxDownloader: ((path: string) => Promise<Buffer>) | undefined;
+
 interface AnalyzedImage {
   fileId: string;
   filename: string;
@@ -68,9 +71,17 @@ async function processImage(
   context: { productName: string; brand: string; vendorHint?: string },
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
-    // Check URL buffer cache first, fall back to Drive download
-    const raw = urlBufferCache.get(file.id) ?? await downloadFile(file.id);
-    urlBufferCache.delete(file.id); // Clean up after use
+    // Resolve the image buffer: URL cache → Dropbox download → Drive download
+    let raw: Buffer;
+    if (urlBufferCache.has(file.id)) {
+      raw = urlBufferCache.get(file.id)!;
+      urlBufferCache.delete(file.id);
+    } else if (file.id.startsWith("dropbox:") && dropboxDownloader) {
+      const dropboxPath = file.id.replace("dropbox:", "");
+      raw = await dropboxDownloader(dropboxPath);
+    } else {
+      raw = await downloadFile(file.id);
+    }
     const rawSizeKB = Math.round(raw.length / 1024);
     console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
@@ -134,6 +145,8 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
     },
     async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages }) => {
+      dropboxDownloader = undefined; // Reset per invocation
+
       if (!folderId && (!urls || urls.length === 0)) {
         return {
           content: [{ type: "text" as const, text: "Provide either folderId (Google Drive / Dropbox link) or urls (public image URLs), or both." }],
@@ -181,27 +194,26 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
           useOwnFolder ? listOwnFolderImages(subPath || ownPath) : listSharedFolderImages(folderId, subPath);
         const getSubs = (subPath: string) =>
           useOwnFolder ? listOwnSubfolders(subPath || ownPath) : listSharedSubfolders(folderId, subPath);
+
+        // Store download function for processImage to use later (parallel, not sequential)
         const dlFile = (filePath: string) =>
           useOwnFolder ? downloadOwnFile(filePath) : downloadSharedFile(folderId, filePath);
+        dropboxDownloader = dlFile;
 
         const loadDropboxFolder = async (subPath: string, subfolder: string | null) => {
           const imgs = await getImages(subPath);
           for (const img of imgs) {
-            try {
-              const buffer = await dlFile(img.path);
-              const syntheticId = `dropbox:${img.path}`;
-              urlBufferCache.set(syntheticId, buffer);
-              allFiles.push({
-                id: syntheticId,
-                name: img.name,
-                mimeType: img.name.split(".").pop() ?? "image/jpeg",
-                size: img.size,
-                parentId: "(dropbox)",
-                subfolder,
-              });
-            } catch (err) {
-              console.error(`[analyze] Dropbox download failed ${img.name}: ${err}`);
-            }
+            // Don't download here — just register the file.
+            // processImage will download in parallel via mapConcurrent.
+            const syntheticId = `dropbox:${img.path}`;
+            allFiles.push({
+              id: syntheticId,
+              name: img.name,
+              mimeType: img.name.split(".").pop() ?? "image/jpeg",
+              size: img.size,
+              parentId: "(dropbox)",
+              subfolder,
+            });
           }
         };
 
