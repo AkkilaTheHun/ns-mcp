@@ -8,7 +8,7 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 
 | Tool | Purpose | When to call |
 |------|---------|-------------|
-| `discover_folder` | Scan Drive folder structure, list files, group by product | First. Understand what you're working with. |
+| `discover_folder` | Scan Drive or Dropbox folder structure, list files, group by product | First. Understand what you're working with. Accepts Drive folder IDs and Dropbox URLs. |
 | `fetch_vendor_page` | Fetch vendor website data: sitemaps, collections, products, HTML pages | When you have a vendor URL. Navigate: sitemap -> collections -> products. |
 | `analyze_images` | Vision analysis on images (supports recursive folder scan) | After discover. Get colors, effects, alt text for all images. |
 | `shopify_preflight` | SKU, dedup, references, brand, all metaobjects + swatchers | In parallel with analyze_images or after. |
@@ -19,7 +19,10 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 
 **Phase 1: Discover** (1-3 tool calls)
 - Ask the user: preorder or in-stock?
-- Call `discover_folder` with the Drive folder ID
+- Call `discover_folder` with the folder link. Accepts:
+  - Google Drive folder ID (e.g., `1eKr3XlG3sbRxZYg3Pd0-sgDBRgakEItz`)
+  - Dropbox `/home/` URL (e.g., `https://www.dropbox.com/home/Take%20It%20Easy`)
+  - Dropbox shared link (e.g., `https://www.dropbox.com/scl/fo/...`) — if restricted, ask the user to "join" the folder in Dropbox and use the `/home/` URL instead
 - If you have a vendor website URL, navigate it step by step:
   1. `fetch_vendor_page(url: "https://vendor.com/sitemap.xml")` — get the sitemap index
   2. Follow the collections sitemap URL to see available collections
@@ -56,6 +59,52 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 - **Be conversational.** Discuss what you're seeing. Ask about edge cases. Don't just silently process and dump a preview.
 - **All images are returned.** Including IMG_#### files. You match them to products using the vision analysis (alt text describes what's in the image) and subfolder context.
 - **Swatcher detection.** `discover_folder` returns subfolder names (often swatcher names like "Yuliia : @yyulia_m"). `shopify_preflight` returns the full swatcher metaobject list. Match them up. If a swatcher isn't in the list, flag it and offer to create one.
+
+### Vendor folder patterns
+
+Different vendors organize their image folders differently. `discover_folder` returns the raw structure; you figure out what it means.
+
+**Pattern A: Product-named files** (e.g., Chamaeleon Harvest Time)
+- Subfolders = swatchers (Yuliia, Trusha, Suzie)
+- Files named `{Product Name}_1.jpg`, `{Product Name} 2.jpeg`
+- `discover_folder` groups by product name automatically
+- Straightforward: each discovered product maps to a Shopify product
+
+**Pattern B: Camera-style filenames** (e.g., Cadillacquer Take It Easy)
+- Subfolders = swatchers (yyulia_m, serpentine13, doseoflolade, Lakodzen, etc.)
+- Files named `Foto 21.04.26, 11 00.heic`, `IMG_1234.jpg`
+- `discover_folder` CANNOT group by product — filenames have no product info
+- **You must use vision analysis** (`analyze_images`) to identify which images show which product
+- Group images by what the vision analysis describes (color, bottle label, effect)
+- Vendor website descriptions are critical here for matching images to product names
+
+**Pattern C: Per-product subfolders** (e.g., some swatchers)
+- Subfolders within swatcher folders named by product
+- `discover_folder` groups by subfolder name
+- Cleanest structure, rare
+
+When you see Pattern B (camera filenames, zero product grouping), always:
+1. Fetch the vendor's website to get product names and descriptions
+2. Run `analyze_images` with `recursive: true` to get vision data for all images
+3. Match images to products yourself using the vision descriptions + vendor context
+4. Discuss your groupings with the user before proceeding
+
+### Known vendor stores
+
+| Brand | Store URL | Platform | Notes |
+|-------|-----------|----------|-------|
+| Cadillacquer | cadillacquer.com | Shopify | Camera-style filenames, uses Dropbox |
+| Dam Nail Polish | damnailpolish.com | Shopify | Product-named files |
+| Glitch Lacquer | glitchlacquer.com | Shopify | |
+| Chamaeleon | chamaeleon-nails.com | Custom (server-rendered) | Product-named files, uses Google Drive |
+| Starrily | starrily.com | Shopify | |
+| Prairie Crocus Polish | prairie-crocus-polish.square.site | Square (JS-rendered, limited) | |
+
+### Dropbox access notes
+
+- **Shared links from vendors** often return `restricted_content`. The workaround: ask the user to "join" the folder in Dropbox, then use the `/home/FolderName` URL.
+- **Own-folder URLs** (after joining): `https://www.dropbox.com/home/Folder%20Name` — always works.
+- Dropbox tokens expire after 4 hours. If you get auth errors, the user needs to regenerate the token.
 
 ---
 
