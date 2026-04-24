@@ -228,6 +228,109 @@ export async function getSharedLinkMetadata(
 }
 
 // ---------------------------------------------------------------------------
+// Own folder listing (not shared links — your own Dropbox)
+// ---------------------------------------------------------------------------
+
+/**
+ * List contents of a folder in the authenticated user's own Dropbox.
+ * Path should be like "" (root), "/Take It Easy", "/folder/subfolder", etc.
+ */
+export async function listOwnFolder(
+  path: string,
+): Promise<{ entries: DropboxEntry[]; hasMore: boolean }> {
+  const allEntries: DropboxEntry[] = [];
+  let cursor: string | undefined;
+  let hasMore = true;
+
+  const res = await fetch(`${DROPBOX_API}/files/list_folder`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({
+      path: path === "/" ? "" : path,
+      limit: 2000,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Dropbox list_folder failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+
+  const data = (await res.json()) as {
+    entries: DropboxEntry[];
+    cursor: string;
+    has_more: boolean;
+  };
+
+  allEntries.push(...data.entries);
+  hasMore = data.has_more;
+  cursor = data.cursor;
+
+  while (hasMore && cursor) {
+    const contRes = await fetch(`${DROPBOX_API}/files/list_folder/continue`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ cursor }),
+    });
+    if (!contRes.ok) break;
+    const contData = (await contRes.json()) as {
+      entries: DropboxEntry[];
+      cursor: string;
+      has_more: boolean;
+    };
+    allEntries.push(...contData.entries);
+    hasMore = contData.has_more;
+    cursor = contData.cursor;
+  }
+
+  return { entries: allEntries, hasMore };
+}
+
+/**
+ * List image files in the authenticated user's own Dropbox folder.
+ */
+export async function listOwnFolderImages(path: string): Promise<DropboxFile[]> {
+  const { entries } = await listOwnFolder(path);
+  return entries
+    .filter((e) => {
+      if (e[".tag"] !== "file") return false;
+      const ext = e.name.toLowerCase().split(".").pop() ?? "";
+      return ["jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "gif", "avif"].includes(ext);
+    })
+    .map((e) => ({ id: e.id, name: e.name, path: e.path_display, size: e.size ?? 0 }));
+}
+
+/**
+ * List subfolders in the authenticated user's own Dropbox folder.
+ */
+export async function listOwnSubfolders(path: string): Promise<Array<{ name: string; path: string }>> {
+  const { entries } = await listOwnFolder(path);
+  return entries
+    .filter((e) => e[".tag"] === "folder")
+    .map((e) => ({ name: e.name, path: e.path_display }));
+}
+
+/**
+ * Download a file from the authenticated user's own Dropbox.
+ */
+export async function downloadOwnFile(path: string): Promise<Buffer> {
+  const res = await fetch(`${DROPBOX_CONTENT}/files/download`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${getToken()}`,
+      "Dropbox-API-Arg": JSON.stringify({ path }),
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Dropbox download failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 

@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, listSubfolders, type DriveFile } from "../../google/drive.js";
-import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, downloadSharedFile } from "../../dropbox/client.js";
+import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, downloadSharedFile, listOwnFolderImages, listOwnSubfolders, downloadOwnFile } from "../../dropbox/client.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
 
 /** Cache for URL-downloaded buffers so processImage can access them by "fileId" (which is the URL). */
@@ -148,24 +148,47 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const allFiles: TaggedFile[] = [];
       let folderName = "(urls)";
 
-      // Source 1a: Dropbox shared link
+      // Source 1a: Dropbox (shared link or own folder)
       if (folderId && isDropbox) {
+        let useOwnFolder = false;
+        let ownPath = "";
+
         try {
           const meta = await getSharedLinkMetadata(folderId);
           folderName = meta.name;
-        } catch (err) {
-          return {
-            content: [{ type: "text" as const, text: `Error accessing Dropbox folder: ${err}` }],
-            isError: true,
-          };
+        } catch {
+          // Shared link failed — try as own folder path
+          const pathMatch = folderId.match(/dropbox\.com\/home\/(.+?)(?:\?|$)/);
+          if (pathMatch) {
+            ownPath = "/" + decodeURIComponent(pathMatch[1]);
+            folderName = ownPath.split("/").pop() ?? "Dropbox";
+            useOwnFolder = true;
+          } else {
+            // Not a /home/ path — retry shared link and let it throw
+            try {
+              const meta = await getSharedLinkMetadata(folderId);
+              folderName = meta.name;
+            } catch (err) {
+              return {
+                content: [{ type: "text" as const, text: `Error accessing Dropbox folder: ${err}` }],
+                isError: true,
+              };
+            }
+          }
         }
 
+        const getImages = (subPath: string) =>
+          useOwnFolder ? listOwnFolderImages(subPath || ownPath) : listSharedFolderImages(folderId, subPath);
+        const getSubs = (subPath: string) =>
+          useOwnFolder ? listOwnSubfolders(subPath || ownPath) : listSharedSubfolders(folderId, subPath);
+        const dlFile = (filePath: string) =>
+          useOwnFolder ? downloadOwnFile(filePath) : downloadSharedFile(folderId, filePath);
+
         const loadDropboxFolder = async (subPath: string, subfolder: string | null) => {
-          const imgs = await listSharedFolderImages(folderId, subPath);
+          const imgs = await getImages(subPath);
           for (const img of imgs) {
-            // Download and cache the file for processImage
             try {
-              const buffer = await downloadSharedFile(folderId, img.path);
+              const buffer = await dlFile(img.path);
               const syntheticId = `dropbox:${img.path}`;
               urlBufferCache.set(syntheticId, buffer);
               allFiles.push({
@@ -184,9 +207,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
 
         if (recursive) {
           await loadDropboxFolder("", null);
-          const subs = await listSharedSubfolders(folderId);
+          const subs = await getSubs("");
           for (const sub of subs) {
-            const subSubs = await listSharedSubfolders(folderId, sub.path);
+            const subSubs = await getSubs(sub.path);
             if (subSubs.length > 0) {
               for (const ps of subSubs) {
                 await loadDropboxFolder(ps.path, `${sub.name}/${ps.name}`);

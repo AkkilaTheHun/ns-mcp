@@ -15,6 +15,8 @@ import {
   listSharedFolderImages,
   listSharedSubfolders,
   getSharedLinkMetadata,
+  listOwnFolderImages,
+  listOwnSubfolders,
   type DropboxFile,
 } from "../../dropbox/client.js";
 
@@ -64,8 +66,33 @@ function isDropboxUrl(input: string): boolean {
 async function scanDropbox(sharedLink: string) {
   const startTime = Date.now();
 
-  const meta = await getSharedLinkMetadata(sharedLink);
-  const folderName = meta.name;
+  // Determine access mode: shared link vs own folder
+  // Try shared link first, fall back to own-folder path if restricted
+  let folderName: string;
+  let useOwnFolder = false;
+  let ownPath = "";
+
+  try {
+    const meta = await getSharedLinkMetadata(sharedLink);
+    folderName = meta.name;
+  } catch (err) {
+    // If shared link fails (restricted_content, etc.), try extracting a path
+    // from the URL and accessing as own folder
+    const pathMatch = sharedLink.match(/dropbox\.com\/home\/(.+?)(?:\?|$)/);
+    if (pathMatch) {
+      ownPath = "/" + decodeURIComponent(pathMatch[1]);
+      folderName = ownPath.split("/").pop() ?? "Unknown";
+      useOwnFolder = true;
+    } else {
+      throw err;
+    }
+  }
+
+  // Helper functions that work for both modes
+  const getImages = (subPath: string) =>
+    useOwnFolder ? listOwnFolderImages(subPath || ownPath) : listSharedFolderImages(sharedLink, subPath);
+  const getSubfolders = (subPath: string) =>
+    useOwnFolder ? listOwnSubfolders(subPath || ownPath) : listSharedSubfolders(sharedLink, subPath);
 
   const allFiles: FolderFile[] = [];
   const productMap = new Map<string, { count: number; subfolders: Set<string> }>();
@@ -73,8 +100,8 @@ async function scanDropbox(sharedLink: string) {
   let unclassifiedCount = 0;
 
   // Direct images
-  const directImages = await listSharedFolderImages(sharedLink);
-  const subfolders = await listSharedSubfolders(sharedLink);
+  const directImages = await getImages("");
+  const subfolders = await getSubfolders("");
 
   for (const img of directImages) {
     allFiles.push({
@@ -97,8 +124,8 @@ async function scanDropbox(sharedLink: string) {
 
   // Subfolders
   for (const sub of subfolders) {
-    const subSubs = await listSharedSubfolders(sharedLink, sub.path);
-    const subImages = await listSharedFolderImages(sharedLink, sub.path);
+    const subSubs = await getSubfolders(sub.path);
+    const subImages = await getImages(sub.path);
 
     swatcherFolders.push({
       name: sub.name,
@@ -109,7 +136,7 @@ async function scanDropbox(sharedLink: string) {
 
     if (subSubs.length > 0) {
       for (const productFolder of subSubs) {
-        const imgs = await listSharedFolderImages(sharedLink, productFolder.path);
+        const imgs = await getImages(productFolder.path);
         for (const img of imgs) {
           allFiles.push({
             id: img.id,
