@@ -62,6 +62,17 @@ Product ingestion uses a **conversational flow** with specialized tools for each
   **Do NOT put Dropbox paths in `driveFileId`.** They are different fields.
 - Report: product title + admin link
 
+### Fixing existing products (do NOT delete and recreate)
+
+If a product was created but needs image fixes, metadata updates, or other changes, **update the existing product.** Never delete and recreate just to fix images or fields.
+
+- **Add images:** `shopify_products(action: "add_media", productId, media: [{originalSource, alt}])`
+- **Remove images:** First get the product to find media IDs, then `shopify_files(action: "delete", ids: [mediaFileId])`
+- **Update metafields:** `shopify_metafields(action: "set", metafields: [{ownerId, namespace, key, value, type}])`
+- **Update SEO/description/tags:** `shopify_products(action: "update", id, descriptionHtml?, seo?, tags?)`
+- **Update variant:** `shopify_variants(action: "update", productId, variants: [{id, price?, sku?}])`
+- **Update translation:** `translate_for_market(resourceId, marketId, translations)`
+
 ### Key principles
 
 - **You make the judgment calls, the tools do the I/O.** The tools return raw data. You decide which images belong to which product, which metaobjects match, and what the description should say.
