@@ -196,8 +196,16 @@ When ingesting multiple products (e.g., a collection drop):
 3. **One `shopify_preflight` call** — shared data (style refs, metaobject lists, swatchers) applies to all products.
 4. **Write descriptions for all products** using the shared context.
 5. **Present all previews** together for batch approval.
-6. **One `create_product` call per product** after approval.
-7. **SKU assignment:** Preflight returns the next available SKU. Increment sequentially for each product in the batch.
+6. **Creation order: reverse alphabetical.** Sort products Z→A by name. The last letter alphabetically gets created first and receives the highest SKU. Example for a 7-shade collection starting at NP-CDL-235:
+   - Sweet Nothing → NP-CDL-241
+   - Slow Mornings → NP-CDL-240
+   - Pastel Thoughts → NP-CDL-239
+   - Just Breathe → NP-CDL-238
+   - Fresh Sheets → NP-CDL-237
+   - Don't Worry → NP-CDL-236
+   - Daydreaming → NP-CDL-235
+7. **One `create_product` call per product** in that order, after approval.
+8. **SKU assignment:** Preflight returns the next available SKU. Assign the highest SKU to the first product created (Z end), decrement for each subsequent product (A end).
 
 ---
 
