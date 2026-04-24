@@ -219,7 +219,62 @@ Examples:
         const parsed = new URL(url);
         const baseUrl = `${parsed.protocol}//${parsed.host}`;
 
-        // Strategy 1: Try Shopify first
+        // If the URL is already a .json endpoint, fetch it directly
+        if (url.includes("/products.json") || url.endsWith(".json")) {
+          const directRes = await shopifyFetch(url);
+          if (directRes.ok) {
+            const data = (await directRes.json()) as { products?: ShopifyProduct[]; product?: ShopifyProduct };
+            let products: ShopifyProduct[] = [];
+            if (data.products) products = data.products;
+            else if (data.product) products = [data.product];
+
+            if (query) {
+              const queryLower = query.toLowerCase();
+              products = products.filter((p) => {
+                const text = `${p.title} ${p.handle} ${Array.isArray(p.tags) ? p.tags.join(" ") : p.tags} ${p.body_html}`.toLowerCase();
+                return text.includes(queryLower);
+              });
+            }
+
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            const mapped = products.map((p) => ({
+              title: p.title,
+              handle: p.handle,
+              vendor: p.vendor,
+              productType: p.product_type,
+              tags: p.tags,
+              description: stripHtml(p.body_html || ""),
+              price: p.variants?.[0]?.price,
+              compareAtPrice: p.variants?.[0]?.compare_at_price,
+              available: p.variants?.some((v) => v.available),
+              variants: p.variants?.map((v) => ({
+                title: v.title,
+                price: v.price,
+                compareAtPrice: v.compare_at_price,
+                sku: v.sku,
+                grams: v.grams,
+                available: v.available,
+              })),
+              images: p.images?.map((i) => ({ src: i.src, alt: i.alt })),
+            }));
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify({
+                  platform: "shopify",
+                  url,
+                  query: query || null,
+                  totalProducts: mapped.length,
+                  products: mapped.slice(0, 25),
+                  ...(mapped.length > 25 ? { note: `Showing 25 of ${mapped.length} matches. Narrow your query.` } : {}),
+                  fetchTimeSeconds: Number(elapsed),
+                }, null, 2),
+              }],
+            };
+          }
+        }
+
+        // Strategy 1: Try Shopify detection (baseUrl/products.json)
         const shopifyResult = await tryShopify(baseUrl, query);
         if (shopifyResult) {
           const products = shopifyResult.products.map((p) => ({
