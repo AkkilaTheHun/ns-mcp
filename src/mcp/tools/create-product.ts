@@ -73,6 +73,10 @@ interface MediaItem {
 /** Download an image from Drive, Dropbox, or a public URL. */
 async function downloadMedia(item: MediaItem): Promise<Buffer> {
   if (item.driveFileId) {
+    // Catch Dropbox IDs accidentally put in driveFileId
+    if (item.driveFileId.startsWith("id:") || item.driveFileId.startsWith("dropbox:") || item.driveFileId.startsWith("/")) {
+      throw new Error(`"${item.driveFileId}" looks like a Dropbox path/ID, not a Google Drive file ID. Use the dropboxPath field instead.`);
+    }
     return downloadFile(item.driveFileId);
   }
   if (item.dropboxPath) {
