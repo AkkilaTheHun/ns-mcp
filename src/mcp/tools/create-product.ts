@@ -15,6 +15,7 @@ import { z } from "zod";
 import sharp from "sharp";
 import { shopifyGraphQL, throwIfUserErrors } from "../../shopify/client.js";
 import { downloadFile } from "../../google/drive.js";
+import { downloadSharedFile, downloadOwnFile } from "../../dropbox/client.js";
 import { registerTranslation } from "./translate.js";
 import { getCurrentSessionId } from "../../context.js";
 import { getSessionShop } from "../../session.js";
@@ -61,10 +62,33 @@ function extractId(gid: string): string {
 // ---------------------------------------------------------------------------
 
 interface MediaItem {
-  driveFileId: string;
+  driveFileId?: string;
+  dropboxPath?: string;
+  url?: string;
   alt: string;
   position: number;
   filename: string;
+}
+
+/** Download an image from Drive, Dropbox, or a public URL. */
+async function downloadMedia(item: MediaItem): Promise<Buffer> {
+  if (item.driveFileId) {
+    return downloadFile(item.driveFileId);
+  }
+  if (item.dropboxPath) {
+    return downloadOwnFile(item.dropboxPath);
+  }
+  if (item.url) {
+    const res = await fetch(item.url, {
+      signal: AbortSignal.timeout(30000),
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${item.url}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  throw new Error(`No source provided for ${item.filename}. Set driveFileId, dropboxPath, or url.`);
 }
 
 async function uploadMediaToShopify(
@@ -77,8 +101,8 @@ async function uploadMediaToShopify(
 
   for (const item of media) {
     try {
-      // 1. Download from Drive
-      const raw = await downloadFile(item.driveFileId);
+      // 1. Download from source (Drive, Dropbox, or URL)
+      const raw = await downloadMedia(item);
       console.log(`[create] Downloaded ${item.filename} (${Math.round(raw.length / 1024)} KB)`);
 
       // 2. Compress via Sharp (production quality — preserve dimensions)
@@ -244,9 +268,11 @@ Products are created as DRAFT. Idempotent by handle — returns error if handle 
         hsCode: z.string().optional().describe("Harmonized system code (default: 330430)"),
       }),
 
-      // Media from Drive
+      // Media (from Drive, Dropbox, or URL — provide one source per image)
       media: z.array(z.object({
-        driveFileId: z.string(),
+        driveFileId: z.string().optional().describe("Google Drive file ID"),
+        dropboxPath: z.string().optional().describe("Dropbox file path (e.g. /Take It Easy/yyulia_m/Foto 07.04.26.jpg)"),
+        url: z.string().optional().describe("Public image URL (Shopify CDN, vendor site, etc.)"),
         alt: z.string(),
         position: z.number(),
         filename: z.string().describe("SEO filename (e.g. cadillacquer-lavender-sunset-bottle-1.jpg)"),
