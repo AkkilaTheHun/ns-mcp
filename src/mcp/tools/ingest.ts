@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, listSubfolders, type DriveFile } from "../../google/drive.js";
+import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, downloadSharedFile } from "../../dropbox/client.js";
 import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
 
 /** Cache for URL-downloaded buffers so processImage can access them by "fileId" (which is the URL). */
@@ -124,29 +125,83 @@ ALL images are processed — nothing is filtered or skipped.
 Returns per-image: type, colors, effects, skin tone, lighting, alt text,
 confidence score, original filename, subfolder path (Drive) or source URL.`,
     {
-      folderId: z.string().optional().describe("Google Drive folder ID to analyze"),
+      folderId: z.string().optional().describe("Google Drive folder ID OR Dropbox shared link URL"),
       urls: z.array(z.string()).optional().describe("Public image URLs to analyze (CDN, vendor sites, etc.)"),
       productName: z.string().describe("Product/shade name for vision context (e.g. 'Lavender Sunset')"),
       brand: z.string().describe("Brand name for vision context (e.g. 'Cadillacquer')"),
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
-      recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders, Drive only)"),
+      recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders)"),
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
     },
     async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages }) => {
       if (!folderId && (!urls || urls.length === 0)) {
         return {
-          content: [{ type: "text" as const, text: "Provide either folderId (Google Drive) or urls (public image URLs), or both." }],
+          content: [{ type: "text" as const, text: "Provide either folderId (Google Drive / Dropbox link) or urls (public image URLs), or both." }],
           isError: true,
         };
       }
+
+      const isDropbox = folderId?.includes("dropbox.com/");
 
       // Collect all images (with subfolder path)
       interface TaggedFile extends DriveFile { subfolder: string | null }
       const allFiles: TaggedFile[] = [];
       let folderName = "(urls)";
 
-      // Source 1: Google Drive folder
-      if (folderId) {
+      // Source 1a: Dropbox shared link
+      if (folderId && isDropbox) {
+        try {
+          const meta = await getSharedLinkMetadata(folderId);
+          folderName = meta.name;
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Error accessing Dropbox folder: ${err}` }],
+            isError: true,
+          };
+        }
+
+        const loadDropboxFolder = async (subPath: string, subfolder: string | null) => {
+          const imgs = await listSharedFolderImages(folderId, subPath);
+          for (const img of imgs) {
+            // Download and cache the file for processImage
+            try {
+              const buffer = await downloadSharedFile(folderId, img.path);
+              const syntheticId = `dropbox:${img.path}`;
+              urlBufferCache.set(syntheticId, buffer);
+              allFiles.push({
+                id: syntheticId,
+                name: img.name,
+                mimeType: img.name.split(".").pop() ?? "image/jpeg",
+                size: img.size,
+                parentId: "(dropbox)",
+                subfolder,
+              });
+            } catch (err) {
+              console.error(`[analyze] Dropbox download failed ${img.name}: ${err}`);
+            }
+          }
+        };
+
+        if (recursive) {
+          await loadDropboxFolder("", null);
+          const subs = await listSharedSubfolders(folderId);
+          for (const sub of subs) {
+            const subSubs = await listSharedSubfolders(folderId, sub.path);
+            if (subSubs.length > 0) {
+              for (const ps of subSubs) {
+                await loadDropboxFolder(ps.path, `${sub.name}/${ps.name}`);
+              }
+            } else {
+              await loadDropboxFolder(sub.path, sub.name);
+            }
+          }
+        } else {
+          await loadDropboxFolder("", null);
+        }
+      }
+
+      // Source 1b: Google Drive folder
+      if (folderId && !isDropbox) {
         try {
           const meta = await getFolderMeta(folderId);
           folderName = meta.name;
@@ -278,8 +333,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         totalAnalyzed: results.length,
         processingTimeSeconds: Number(elapsed),
         images: results.map((r) => ({
-          fileId: r.parentFolderId === "(url)" ? undefined : r.fileId,
+          fileId: r.parentFolderId === "(url)" || r.parentFolderId === "(dropbox)" ? undefined : r.fileId,
           sourceUrl: r.parentFolderId === "(url)" ? r.fileId : undefined,
+          dropboxPath: r.parentFolderId === "(dropbox)" ? r.fileId.replace("dropbox:", "") : undefined,
           filename: r.filename,
           proposedFilename: r.proposedFilename,
           subfolder: r.subfolder,
