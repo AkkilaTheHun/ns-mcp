@@ -147,11 +147,12 @@ to gather everything needed before writing descriptions and building previews.`,
         styleReference,
         brand,
 
+        // Trimmed to {id, handle, displayName} to save tokens
         availableMetaobjects: {
-          colors,
-          finishes,
-          polishTypes,
-          swatchers,
+          colors: colors.map((c) => ({ id: c.id, handle: c.handle, displayName: c.displayName })),
+          finishes: finishes.map((f) => ({ id: f.id, handle: f.handle, displayName: f.displayName })),
+          polishTypes: polishTypes.map((p) => ({ id: p.id, handle: p.handle, displayName: p.displayName })),
+          swatchers: swatchers.map((s) => ({ id: s.id, handle: s.handle, displayName: s.displayName })),
         },
 
         pricing,

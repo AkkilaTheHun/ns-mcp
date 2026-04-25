@@ -178,8 +178,8 @@ async function scanDropbox(sharedLink: string) {
     }
   }
 
-  const discoveredProducts: DiscoveredProduct[] = [...productMap.entries()]
-    .map(([name, data]) => ({ name, imageCount: data.count, subfolders: [...data.subfolders] }))
+  const discoveredProducts = [...productMap.entries()]
+    .map(([name, data]) => ({ name, imageCount: data.count }))
     .sort((a, b) => b.imageCount - a.imageCount);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -197,7 +197,7 @@ async function scanDropbox(sharedLink: string) {
     swatcherFolders,
     discoveredProducts,
     unclassifiedImageCount: unclassifiedCount,
-    files: allFiles,
+    // files array omitted to save tokens — use analyze_images to get per-file details
     scanTimeSeconds: Number(elapsed),
   };
 }
@@ -296,8 +296,8 @@ async function scanDrive(folderId: string) {
     }
   }
 
-  const discoveredProducts: DiscoveredProduct[] = [...productMap.entries()]
-    .map(([name, data]) => ({ name, imageCount: data.count, subfolders: [...data.subfolders] }))
+  const discoveredProducts = [...productMap.entries()]
+    .map(([name, data]) => ({ name, imageCount: data.count }))
     .sort((a, b) => b.imageCount - a.imageCount);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -315,7 +315,7 @@ async function scanDrive(folderId: string) {
     swatcherFolders,
     discoveredProducts,
     unclassifiedImageCount: unclassifiedCount,
-    files: allFiles,
+    // files array omitted to save tokens — use analyze_images to get per-file details
     scanTimeSeconds: Number(elapsed),
   };
 }

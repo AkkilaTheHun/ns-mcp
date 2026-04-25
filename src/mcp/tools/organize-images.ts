@@ -207,11 +207,13 @@ Workflow:
 
             const succeeded = results.filter((r) => r.ok).length;
             const failed = results.filter((r) => !r.ok).length;
+            // Only include failed items in results to save tokens
+            const failedItems = results.filter((r) => !r.ok);
             return ok({
               total: results.length,
               succeeded,
               failed,
-              results,
+              ...(failedItems.length > 0 ? { failedItems } : {}),
             });
           }
 

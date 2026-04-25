@@ -294,7 +294,8 @@ Examples:
                 grams: v.grams,
                 available: v.available,
               })),
-              images: p.images?.map((i) => ({ src: i.src, alt: i.alt })),
+              images: p.images?.slice(0, 5).map((i) => ({ src: i.src })),
+              totalImages: p.images?.length ?? 0,
             }));
             return {
               content: [{
