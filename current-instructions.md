@@ -44,18 +44,10 @@ Staging folders: Drive under `NailStuff Staging/{Collection} - Staging/`, Dropbo
 - Assign images to products, update alt text with swatcher credits
 - Present the preview for each product; discuss and iterate
 
-**Phase 4: Create** (1 tool call per product, after explicit user approval)
-- Call `create_product` with the finalized payload
-- Include swatcher GIDs, publishing preference, and US translation
-- **Media field mapping:**
-
-  | Image source | `analyze_images` returns | `create_product` media field |
-  |-------------|------------------------|---------------------------|
-  | Google Drive | `fileId` | `driveFileId` |
-  | Dropbox | `dropboxPath` | `dropboxPath` |
-  | Public URL | `sourceUrl` | `url` |
-
-  **Do NOT put Dropbox paths in `driveFileId`.** They are different fields.
+**Phase 4: Create** (after explicit user approval)
+- Call `create_product` with `media: []` (empty) if images will come from staging. Include swatcher GIDs, publishing preference, and US translation.
+- Then call `organize_images(action: "push_to_product", stagingFolder, shade, productId, brand)` for each shade to push images from the reviewed staging folders to Shopify. No media arrays, no file paths, no alt text needed. The tool handles everything from the folder contents.
+- If NOT using staging, pass media directly in `create_product` using the correct source field: `driveFileId` for Drive, `dropboxPath` for Dropbox, `url` for public URLs. Do NOT put Dropbox paths in `driveFileId`.
 - Report: product title + admin link
 
 ### Fixing existing products (do NOT delete and recreate)
