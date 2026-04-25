@@ -65,7 +65,7 @@ export function registerOrganizeImagesTool(server: McpServer): void {
 Actions:
 - create_staging: Create "{Collection} - Staging" folder with shade subfolders.
   Location: user's own Drive (under "NailStuff Staging") or Dropbox (under "/NailStuff Staging/").
-- copy_to_shade: Copy a file from the source folder into a shade subfolder, renaming with swatcher info.
+- copy_to_shade: Copy one or more files into shade subfolders, renaming with swatcher info. Pass a single file (shade + fileId + swatcherHandle) or a batch (files array with shade, fileId, swatcherHandle per item).
 - move_between_shades: Move a file from one shade folder to another (for corrections after review).
 - list_staging: List the current state of a staging folder (shade counts + filenames).
 
@@ -83,11 +83,16 @@ Workflow:
       collectionName: z.string().optional().describe("Collection name (e.g., 'Take It Easy')"),
       shadeNames: z.array(z.string()).optional().describe("Shade/product names to create subfolders for"),
 
-      // copy_to_shade
+      // copy_to_shade (single or batch)
       stagingFolder: z.string().optional().describe("Staging folder ID (Drive) or path (Dropbox) from create_staging"),
-      shade: z.string().optional().describe("Target shade name"),
-      fileId: z.string().optional().describe("Drive file ID or Dropbox path of the original file"),
-      swatcherHandle: z.string().optional().describe("Swatcher handle to append to filename (e.g., 'yyulia_m')"),
+      shade: z.string().optional().describe("Target shade name (for single file copy)"),
+      fileId: z.string().optional().describe("Drive file ID or Dropbox path of the original file (for single file copy)"),
+      swatcherHandle: z.string().optional().describe("Swatcher handle to append to filename (for single file copy)"),
+      files: z.array(z.object({
+        shade: z.string().describe("Target shade name"),
+        fileId: z.string().describe("Drive file ID or Dropbox path"),
+        swatcherHandle: z.string().optional().describe("Swatcher handle"),
+      })).optional().describe("Batch copy: array of files with shade, fileId, swatcherHandle per item"),
 
       // move_between_shades
       fromShade: z.string().optional().describe("Source shade name"),
@@ -153,36 +158,61 @@ Workflow:
           // COPY TO SHADE
           // ---------------------------------------------------------------
           case "copy_to_shade": {
-            if (!p.stagingFolder || !p.shade || !p.fileId) {
-              return fail("copy_to_shade requires stagingFolder, shade, and fileId");
+            if (!p.stagingFolder) {
+              return fail("copy_to_shade requires stagingFolder");
             }
 
-            const useDropbox = p.stagingFolder.startsWith("/") || p.stagingFolder.includes("NailStuff Staging");
-
-            if (useDropbox && p.stagingFolder.startsWith("/")) {
-              // Dropbox: copy file
-              const originalName = p.fileId.split("/").pop() ?? "image.jpg";
-              const newName = stagingFilename(originalName, p.swatcherHandle);
-              const toPath = `${p.stagingFolder}/${p.shade}/${newName}`;
-
-              const result = await copyDropboxFile(p.fileId, toPath);
-              return ok({ copied: result.path, filename: result.name });
+            // Build file list: either from batch array or single params
+            const filesToCopy: Array<{ shade: string; fileId: string; swatcherHandle?: string }> = [];
+            if (p.files?.length) {
+              filesToCopy.push(...p.files);
+            } else if (p.shade && p.fileId) {
+              filesToCopy.push({ shade: p.shade, fileId: p.fileId, swatcherHandle: p.swatcherHandle });
             } else {
-              // Google Drive: find shade folder, copy file
-              const subs = await listSubfolders(p.stagingFolder);
-              const shadeFolder = subs.find((s) => s.name === p.shade);
-              if (!shadeFolder) return fail(`Shade folder "${p.shade}" not found in staging`);
-
-              // Get original filename
-              const originalName = p.fileId; // For Drive, we need the file ID
-              // We need to get the file's name first
-              const { google } = await import("googleapis");
-              const drive = google.drive({ version: "v3" });
-              // Actually, copyDriveFile handles the name
-              const newName = stagingFilename("image.jpg", p.swatcherHandle);
-              const result = await copyDriveFile(p.fileId, newName, shadeFolder.id);
-              return ok({ copied: result.id, filename: result.name });
+              return fail("copy_to_shade requires either 'files' array or 'shade' + 'fileId'");
             }
+
+            const useDropbox = p.stagingFolder.startsWith("/");
+            const results: Array<{ shade: string; filename: string; ok: boolean; error?: string }> = [];
+
+            // Pre-fetch Drive shade folders if needed
+            let driveShadeFolders: Map<string, string> | undefined;
+            if (!useDropbox) {
+              const subs = await listSubfolders(p.stagingFolder);
+              driveShadeFolders = new Map(subs.map((s) => [s.name, s.id]));
+            }
+
+            for (const file of filesToCopy) {
+              try {
+                if (useDropbox) {
+                  const originalName = file.fileId.split("/").pop() ?? "image.jpg";
+                  const newName = stagingFilename(originalName, file.swatcherHandle);
+                  const toPath = `${p.stagingFolder}/${file.shade}/${newName}`;
+                  await copyDropboxFile(file.fileId, toPath);
+                  results.push({ shade: file.shade, filename: newName, ok: true });
+                } else {
+                  const shadeFolderId = driveShadeFolders?.get(file.shade);
+                  if (!shadeFolderId) {
+                    results.push({ shade: file.shade, filename: file.fileId, ok: false, error: `Shade folder "${file.shade}" not found` });
+                    continue;
+                  }
+                  const newName = stagingFilename("image.jpg", file.swatcherHandle);
+                  await copyDriveFile(file.fileId, newName, shadeFolderId);
+                  results.push({ shade: file.shade, filename: newName, ok: true });
+                }
+              } catch (err) {
+                results.push({ shade: file.shade, filename: file.fileId, ok: false, error: String(err) });
+              }
+            }
+
+            const succeeded = results.filter((r) => r.ok).length;
+            const failed = results.filter((r) => !r.ok).length;
+            return ok({
+              total: results.length,
+              succeeded,
+              failed,
+              results,
+            });
           }
 
           // ---------------------------------------------------------------
