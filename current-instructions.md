@@ -43,7 +43,7 @@ Product ingestion uses a **conversational flow** with specialized tools for each
 
 **Phase 2b: Stage for review** (optional — use when shades are similar or vision results are uncertain)
 1. Call `organize_images(action: "create_staging", source, collectionName, shadeNames)` to create the staging folder structure
-2. Call `organize_images(action: "copy_to_shade", ...)` for each image, grouping by your best-guess shade. Include the swatcher handle from the subfolder name.
+2. Call `organize_images(action: "copy_to_shade", stagingFolder, files: [...])` with a batch of all images. Each entry needs `shade`, `fileId`, and `swatcherHandle`. One tool call for the whole collection.
 3. Tell the user: "I've organized X images into Y shade folders. Please review in [Drive/Dropbox link] and drag any misidentified images to the right folder."
 4. Wait for the user to confirm they're done reviewing
 5. Call `organize_images(action: "list_staging")` to get the corrected groupings
