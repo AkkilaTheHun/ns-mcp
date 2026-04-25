@@ -11,12 +11,14 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import sharp from "sharp";
 import {
   findOrCreateDriveFolder,
   copyDriveFile,
   moveDriveFile,
   listFolderImages,
   listSubfolders,
+  downloadFile,
 } from "../../google/drive.js";
 import {
   createDropboxFolder,
@@ -24,7 +26,12 @@ import {
   moveDropboxFile,
   listOwnFolderImages,
   listOwnSubfolders,
+  downloadOwnFile,
 } from "../../dropbox/client.js";
+import { shopifyGraphQL, throwIfUserErrors } from "../../shopify/client.js";
+import { getCurrentSessionId } from "../../context.js";
+import { getSessionShop } from "../../session.js";
+import { config } from "../../config.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,17 +73,18 @@ Actions:
 - create_staging: Create "{Collection} - Staging" folder with shade subfolders.
   Location: user's own Drive (under "NailStuff Staging") or Dropbox (under "/NailStuff Staging/").
 - copy_to_shade: Copy one or more files into shade subfolders, renaming with swatcher info. Pass a single file (shade + fileId + swatcherHandle) or a batch (files array with shade, fileId, swatcherHandle per item).
+- stage_all: Create staging folders AND copy all files in one call. Pass shadeAssignments — a compact map of shade name to array of {fileId, swatcherHandle}. Creates folders + copies everything. Saves tokens vs separate create_staging + copy_to_shade calls.
 - move_between_shades: Move a file from one shade folder to another (for corrections after review).
 - list_staging: List the current state of a staging folder (shade counts + filenames).
+- push_to_product: Push all images from a shade folder to a Shopify product. Downloads, compresses, uploads via staged uploads. Generates alt text from shade name + brand + swatcher handle in filename. One call per product.
 
 Workflow:
-1. After analyze_images, call create_staging with the collection name and shade list
-2. Call copy_to_shade for each image, grouping by best-guess shade
-3. Tell the user to review the folders and drag any misidentified images
-4. After review, call list_staging to get the corrected groupings
-5. Use the corrected groupings for create_product`,
+1. After analyze_images, call stage_all with source, collectionName, and shadeAssignments
+2. Tell the user to review the folders and drag any misidentified images
+3. After review, call push_to_product for each shade/product pair
+4. Done. No need to build media arrays or pass individual file paths.`,
     {
-      action: z.enum(["create_staging", "copy_to_shade", "move_between_shades", "list_staging"]),
+      action: z.enum(["create_staging", "copy_to_shade", "stage_all", "move_between_shades", "list_staging", "push_to_product"]),
 
       // create_staging
       source: z.string().optional().describe("Drive folder ID or Dropbox /home/ URL of the source collection"),
@@ -93,6 +101,19 @@ Workflow:
         fileId: z.string().describe("Drive file ID or Dropbox path"),
         swatcherHandle: z.string().optional().describe("Swatcher handle"),
       })).optional().describe("Batch copy: array of files with shade, fileId, swatcherHandle per item"),
+
+      // stage_all (compact: create + copy in one call)
+      shadeAssignments: z.record(
+        z.string(),
+        z.array(z.object({
+          fileId: z.string(),
+          swatcherHandle: z.string().optional(),
+        })),
+      ).optional().describe("Map of shade name to array of {fileId, swatcherHandle}. E.g., {\"Sweet Nothing\": [{fileId: \"/path/img.jpg\", swatcherHandle: \"yyulia_m\"}]}"),
+
+      // push_to_product
+      productId: z.string().optional().describe("Shopify product GID to push images to"),
+      brand: z.string().optional().describe("Brand name for alt text generation"),
 
       // move_between_shades
       fromShade: z.string().optional().describe("Source shade name"),
@@ -218,6 +239,85 @@ Workflow:
           }
 
           // ---------------------------------------------------------------
+          // STAGE ALL (create folders + copy everything in one call)
+          // ---------------------------------------------------------------
+          case "stage_all": {
+            if (!p.source || !p.collectionName || !p.shadeAssignments) {
+              return fail("stage_all requires source, collectionName, and shadeAssignments");
+            }
+
+            const shadeNames = Object.keys(p.shadeAssignments);
+            const useDropbox = isDropbox(p.source);
+            const stagingName = `${p.collectionName} - Staging`;
+
+            // Step 1: Create folders
+            let stagingPath: string;
+            if (useDropbox) {
+              const rootPath = "/NailStuff Staging";
+              await createDropboxFolder(rootPath);
+              stagingPath = `${rootPath}/${stagingName}`;
+              await createDropboxFolder(stagingPath);
+              for (const shade of shadeNames) {
+                await createDropboxFolder(`${stagingPath}/${shade}`);
+              }
+            } else {
+              const root = await findOrCreateDriveFolder("NailStuff Staging");
+              const staging = await findOrCreateDriveFolder(stagingName, root.id);
+              stagingPath = staging.id;
+              for (const shade of shadeNames) {
+                await findOrCreateDriveFolder(shade, staging.id);
+              }
+            }
+
+            // Step 2: Copy all files
+            let succeeded = 0;
+            let failed = 0;
+            const failedItems: Array<{ shade: string; fileId: string; error: string }> = [];
+
+            // Pre-fetch Drive shade folders if needed
+            let driveShadeFolders: Map<string, string> | undefined;
+            if (!useDropbox) {
+              const subs = await listSubfolders(stagingPath);
+              driveShadeFolders = new Map(subs.map((s) => [s.name, s.id]));
+            }
+
+            for (const [shade, files] of Object.entries(p.shadeAssignments)) {
+              for (const file of files) {
+                try {
+                  if (useDropbox) {
+                    const originalName = file.fileId.split("/").pop() ?? "image.jpg";
+                    const newName = stagingFilename(originalName, file.swatcherHandle);
+                    await copyDropboxFile(file.fileId, `${stagingPath}/${shade}/${newName}`);
+                  } else {
+                    const shadeFolderId = driveShadeFolders?.get(shade);
+                    if (!shadeFolderId) throw new Error(`Shade folder "${shade}" not found`);
+                    const newName = stagingFilename("image.jpg", file.swatcherHandle);
+                    await copyDriveFile(file.fileId, newName, shadeFolderId);
+                  }
+                  succeeded++;
+                } catch (err) {
+                  failed++;
+                  failedItems.push({ shade, fileId: file.fileId, error: String(err) });
+                }
+              }
+            }
+
+            const stagingUrl = useDropbox
+              ? `https://www.dropbox.com/home${encodeURI(stagingPath).replace(/%20/g, "%20")}`
+              : undefined;
+
+            return ok({
+              stagingFolder: stagingPath,
+              ...(stagingUrl ? { stagingUrl } : {}),
+              shades: shadeNames,
+              total: succeeded + failed,
+              succeeded,
+              failed,
+              ...(failedItems.length > 0 ? { failedItems } : {}),
+            });
+          }
+
+          // ---------------------------------------------------------------
           // MOVE BETWEEN SHADES
           // ---------------------------------------------------------------
           case "move_between_shades": {
@@ -300,6 +400,159 @@ Workflow:
                 shades,
               });
             }
+          }
+
+          // ---------------------------------------------------------------
+          // PUSH TO PRODUCT (staging folder → Shopify product images)
+          // ---------------------------------------------------------------
+          case "push_to_product": {
+            if (!p.stagingFolder || !p.shade || !p.productId) {
+              return fail("push_to_product requires stagingFolder, shade, and productId");
+            }
+
+            // Resolve shop
+            let shop: string | undefined;
+            const sid = getCurrentSessionId();
+            if (sid) shop = getSessionShop(sid);
+            if (!shop) {
+              const domains = [...config.shops.keys()];
+              if (domains.length === 1) shop = domains[0];
+              else {
+                const prod = domains.filter((d) => !d.includes("-dev"));
+                if (prod.length === 1) shop = prod[0];
+              }
+            }
+            if (!shop) return fail("No shop selected. Use shopify_shop(action: 'select') first.");
+
+            const useDropbox = p.stagingFolder.startsWith("/");
+            const shadePath = useDropbox
+              ? `${p.stagingFolder}/${p.shade}`
+              : undefined;
+
+            // List images in shade folder
+            interface StagedImage { name: string; path?: string; id?: string }
+            const images: StagedImage[] = [];
+
+            if (useDropbox) {
+              const imgs = await listOwnFolderImages(shadePath!);
+              for (const img of imgs) images.push({ name: img.name, path: img.path });
+            } else {
+              const subs = await listSubfolders(p.stagingFolder);
+              const shadeFolder = subs.find((s) => s.name === p.shade);
+              if (!shadeFolder) return fail(`Shade folder "${p.shade}" not found`);
+              const imgs = await listFolderImages(shadeFolder.id);
+              for (const img of imgs) images.push({ name: img.name, id: img.id });
+            }
+
+            if (images.length === 0) {
+              return fail(`No images found in staging folder for "${p.shade}"`);
+            }
+
+            // Upload each image to Shopify
+            const brandName = p.brand ?? "polish";
+            let uploaded = 0;
+            const errors: string[] = [];
+
+            for (let i = 0; i < images.length; i++) {
+              const img = images[i];
+              try {
+                // Download
+                const raw = useDropbox
+                  ? await downloadOwnFile(img.path!)
+                  : await downloadFile(img.id!);
+
+                // Compress
+                const compressed = await sharp(raw, { failOn: "none" })
+                  .rotate()
+                  .jpeg({ quality: 85, mozjpeg: true })
+                  .toBuffer();
+
+                // Extract swatcher from filename (pattern: xxx_swatcher-handle.ext)
+                const swatcherMatch = img.name.match(/_swatcher-([^.]+)\./);
+                const swatcher = swatcherMatch ? `@${swatcherMatch[1]}` : "";
+
+                // Generate alt text
+                const alt = `${brandName} nail polish in ${p.shade}${swatcher ? `, swatched by ${swatcher}` : ""}`;
+
+                // SEO filename
+                const kebab = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+                const seoFilename = `${kebab(brandName)}-${kebab(p.shade)}-${i + 1}.jpg`;
+
+                // Staged upload
+                const stageRes = await shopifyGraphQL<{
+                  stagedUploadsCreate: {
+                    stagedTargets: Array<{ url: string; resourceUrl: string }>;
+                    userErrors: Array<{ field: string[]; message: string }>;
+                  };
+                }>(
+                  `mutation($input: [StagedUploadInput!]!) {
+                    stagedUploadsCreate(input: $input) {
+                      stagedTargets { url resourceUrl }
+                      userErrors { field message }
+                    }
+                  }`,
+                  {
+                    input: [{
+                      filename: seoFilename,
+                      mimeType: "image/jpeg",
+                      httpMethod: "PUT",
+                      resource: "IMAGE",
+                      fileSize: String(compressed.length),
+                    }],
+                  },
+                  shop,
+                );
+
+                throwIfUserErrors(stageRes.data?.stagedUploadsCreate?.userErrors, "stagedUploadsCreate");
+                const target = stageRes.data?.stagedUploadsCreate?.stagedTargets?.[0];
+                if (!target) { errors.push(`${img.name}: no staged target`); continue; }
+
+                // Upload to staged URL
+                const uploadRes = await fetch(target.url, {
+                  method: "PUT",
+                  headers: { "Content-Type": "image/jpeg", "Content-Length": String(compressed.length) },
+                  body: new Blob([new Uint8Array(compressed)], { type: "image/jpeg" }),
+                });
+                if (!uploadRes.ok) { errors.push(`${img.name}: upload HTTP ${uploadRes.status}`); continue; }
+
+                // Attach to product
+                const attachRes = await shopifyGraphQL<{
+                  productCreateMedia: {
+                    media: Array<{ id: string }>;
+                    mediaUserErrors: Array<{ field: string[]; message: string }>;
+                  };
+                }>(
+                  `mutation($productId: ID!, $media: [CreateMediaInput!]!) {
+                    productCreateMedia(productId: $productId, media: $media) {
+                      media { id }
+                      mediaUserErrors { field message }
+                    }
+                  }`,
+                  {
+                    productId: p.productId,
+                    media: [{ originalSource: target.resourceUrl, alt, mediaContentType: "IMAGE" }],
+                  },
+                  shop,
+                );
+
+                const mediaErrors = attachRes.data?.productCreateMedia?.mediaUserErrors;
+                if (mediaErrors?.length) { errors.push(`${img.name}: ${mediaErrors.map((e) => e.message).join(", ")}`); continue; }
+
+                uploaded++;
+                console.log(`[organize] Pushed ${img.name} to product (${uploaded}/${images.length})`);
+              } catch (err) {
+                errors.push(`${img.name}: ${err}`);
+              }
+            }
+
+            return ok({
+              productId: p.productId,
+              shade: p.shade,
+              total: images.length,
+              uploaded,
+              failed: errors.length,
+              ...(errors.length > 0 ? { errors } : {}),
+            });
           }
 
           default:
