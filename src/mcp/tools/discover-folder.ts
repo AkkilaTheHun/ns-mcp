@@ -182,9 +182,11 @@ async function scanDropbox(sharedLink: string) {
     .map(([name, data]) => ({ name, imageCount: data.count }))
     .sort((a, b) => b.imageCount - a.imageCount);
 
-  // If most "products" are unique (camera filenames), skip the list entirely
-  const hasRealGroupings = allProducts.some((p) => p.imageCount > 2);
-  const discoveredProducts = hasRealGroupings ? allProducts.slice(0, 30) : [];
+  // Filter out camera-style filenames (Foto, IMG, DSC, etc.) - they don't represent real products
+  const cameraPattern = /^(Foto|IMG|DSC|DSCN|DSCF|P\d|Screenshot|Photo)\b/i;
+  const realProducts = allProducts.filter((p) => !cameraPattern.test(p.name));
+  const cameraFileCount = allProducts.length - realProducts.length;
+  const discoveredProducts = realProducts.slice(0, 30);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   let structure = "flat";
@@ -200,6 +202,7 @@ async function scanDropbox(sharedLink: string) {
     totalSubfolders: subfolders.length,
     swatcherFolders,
     discoveredProducts,
+    cameraStyleFiles: cameraFileCount,
     unclassifiedImageCount: unclassifiedCount,
     // files array omitted to save tokens — use analyze_images to get per-file details
     scanTimeSeconds: Number(elapsed),
@@ -304,9 +307,11 @@ async function scanDrive(folderId: string) {
     .map(([name, data]) => ({ name, imageCount: data.count }))
     .sort((a, b) => b.imageCount - a.imageCount);
 
-  // If most "products" are unique (camera filenames), skip the list entirely
-  const hasRealGroupings = allProducts.some((p) => p.imageCount > 2);
-  const discoveredProducts = hasRealGroupings ? allProducts.slice(0, 30) : [];
+  // Filter out camera-style filenames (Foto, IMG, DSC, etc.) - they don't represent real products
+  const cameraPattern = /^(Foto|IMG|DSC|DSCN|DSCF|P\d|Screenshot|Photo)\b/i;
+  const realProducts = allProducts.filter((p) => !cameraPattern.test(p.name));
+  const cameraFileCount = allProducts.length - realProducts.length;
+  const discoveredProducts = realProducts.slice(0, 30);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   let structure = "flat";
@@ -322,6 +327,7 @@ async function scanDrive(folderId: string) {
     totalSubfolders: subfolders.length,
     swatcherFolders,
     discoveredProducts,
+    cameraStyleFiles: cameraFileCount,
     unclassifiedImageCount: unclassifiedCount,
     // files array omitted to save tokens — use analyze_images to get per-file details
     scanTimeSeconds: Number(elapsed),
