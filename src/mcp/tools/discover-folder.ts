@@ -178,11 +178,13 @@ async function scanDropbox(sharedLink: string) {
     }
   }
 
-  const discoveredProducts = [...productMap.entries()]
+  const allProducts = [...productMap.entries()]
     .map(([name, data]) => ({ name, imageCount: data.count }))
-    .filter((p) => !/^(Foto|IMG|DSC|DSCN|DSCF|P\d|Screenshot|Photo)\s/i.test(p.name))
-    .sort((a, b) => b.imageCount - a.imageCount)
-    .slice(0, 30);
+    .sort((a, b) => b.imageCount - a.imageCount);
+
+  // If most "products" are unique (camera filenames), skip the list entirely
+  const hasRealGroupings = allProducts.some((p) => p.imageCount > 2);
+  const discoveredProducts = hasRealGroupings ? allProducts.slice(0, 30) : [];
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   let structure = "flat";
@@ -298,11 +300,13 @@ async function scanDrive(folderId: string) {
     }
   }
 
-  const discoveredProducts = [...productMap.entries()]
+  const allProducts = [...productMap.entries()]
     .map(([name, data]) => ({ name, imageCount: data.count }))
-    .filter((p) => !/^(Foto|IMG|DSC|DSCN|DSCF|P\d|Screenshot|Photo)\s/i.test(p.name))
-    .sort((a, b) => b.imageCount - a.imageCount)
-    .slice(0, 30);
+    .sort((a, b) => b.imageCount - a.imageCount);
+
+  // If most "products" are unique (camera filenames), skip the list entirely
+  const hasRealGroupings = allProducts.some((p) => p.imageCount > 2);
+  const discoveredProducts = hasRealGroupings ? allProducts.slice(0, 30) : [];
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   let structure = "flat";
