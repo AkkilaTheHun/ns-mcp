@@ -180,7 +180,9 @@ async function scanDropbox(sharedLink: string) {
 
   const discoveredProducts = [...productMap.entries()]
     .map(([name, data]) => ({ name, imageCount: data.count }))
-    .sort((a, b) => b.imageCount - a.imageCount);
+    .filter((p) => !/^(Foto|IMG|DSC|DSCN|DSCF|P\d|Screenshot|Photo)\s/i.test(p.name))
+    .sort((a, b) => b.imageCount - a.imageCount)
+    .slice(0, 30);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   let structure = "flat";
@@ -298,7 +300,9 @@ async function scanDrive(folderId: string) {
 
   const discoveredProducts = [...productMap.entries()]
     .map(([name, data]) => ({ name, imageCount: data.count }))
-    .sort((a, b) => b.imageCount - a.imageCount);
+    .filter((p) => !/^(Foto|IMG|DSC|DSCN|DSCF|P\d|Screenshot|Photo)\s/i.test(p.name))
+    .sort((a, b) => b.imageCount - a.imageCount)
+    .slice(0, 30);
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   let structure = "flat";
