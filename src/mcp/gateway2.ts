@@ -318,6 +318,82 @@ minimumRequirement: {subtotal: "50"} or {quantity: 3}`,
 
 const MENU_ITEMS = `id title type url resourceId tags items{id title type url resourceId tags items{id title type url resourceId tags}}`;
 
+// ---------- Menu patch helpers ----------
+
+type MenuItem = {
+  id?: string; title: string; type: string; url?: string | null;
+  resourceId?: string | null; tags?: string[]; items?: MenuItem[];
+};
+
+type PatchOp =
+  | { op: "add"; parentTitle?: string; parentId?: string; position?: number; items: MenuItem[] }
+  | { op: "remove"; titles?: string[]; ids?: string[] }
+  | { op: "update"; title?: string; id?: string; fields: Record<string, unknown> }
+  | { op: "move"; title?: string; id?: string; newParentTitle?: string; newParentId?: string; position?: number };
+
+function findItem(items: MenuItem[], title?: string, id?: string): { parent: MenuItem[]; index: number } | null {
+  for (let i = 0; i < items.length; i++) {
+    if ((id && items[i].id === id) || (title && items[i].title === title)) return { parent: items, index: i };
+    if (items[i].items?.length) {
+      const found = findItem(items[i].items!, title, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findParent(items: MenuItem[], title?: string, id?: string): MenuItem[] | null {
+  if (!title && !id) return items; // root level
+  for (const item of items) {
+    if ((id && item.id === id) || (title && item.title === title)) return item.items ??= [];
+    if (item.items?.length) {
+      const found = findParent(item.items, title, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function applyPatches(items: MenuItem[], ops: PatchOp[]): MenuItem[] {
+  const tree = JSON.parse(JSON.stringify(items)) as MenuItem[];
+  for (const op of ops) {
+    switch (op.op) {
+      case "add": {
+        const target = findParent(tree, op.parentTitle, op.parentId);
+        if (!target) throw new Error(`Parent not found: ${op.parentTitle ?? op.parentId}`);
+        const pos = op.position ?? target.length;
+        target.splice(pos, 0, ...op.items);
+        break;
+      }
+      case "remove": {
+        const keys = [...(op.titles ?? []), ...(op.ids ?? [])];
+        for (const key of keys) {
+          const found = findItem(tree, op.titles?.includes(key) ? key : undefined, op.ids?.includes(key) ? key : undefined);
+          if (found) found.parent.splice(found.index, 1);
+        }
+        break;
+      }
+      case "update": {
+        const found = findItem(tree, op.title, op.id);
+        if (!found) throw new Error(`Item not found: ${op.title ?? op.id}`);
+        Object.assign(found.parent[found.index], op.fields);
+        break;
+      }
+      case "move": {
+        const found = findItem(tree, op.title, op.id);
+        if (!found) throw new Error(`Item not found: ${op.title ?? op.id}`);
+        const [item] = found.parent.splice(found.index, 1);
+        const target = findParent(tree, op.newParentTitle, op.newParentId);
+        if (!target) throw new Error(`New parent not found: ${op.newParentTitle ?? op.newParentId}`);
+        const pos = op.position ?? target.length;
+        target.splice(pos, 0, item);
+        break;
+      }
+    }
+  }
+  return tree;
+}
+
 export function registerNavigationGateway(server: McpServer): void {
   server.tool(
     "shopify_navigation",
@@ -327,6 +403,13 @@ MENUS:
 - get_menu: Get menu by ID or handle (params: id?, handle?)
 - create_menu: Create menu (params: title, handle, items[])
 - update_menu: Update menu — replaces full item tree (params: id, title, handle, items[])
+- patch_menu: Apply targeted changes without sending the full tree. Fetches current menu, applies ops, saves.
+    Requires: id or handle. Params: ops[] array of patch operations:
+      {op:"add", parentTitle?:"Nail Polish", items:[{title,type,resourceId,...}], position?:0}
+      {op:"remove", titles?:["Old Item"], ids?:["gid://shopify/MenuItem/123"]}
+      {op:"update", title?:"Old Title", id?:"...", fields:{title:"New Title",...}}
+      {op:"move", title?:"Item", newParentTitle?:"New Parent", position?:0}
+    Items are matched by title (first match, depth-first) or by id. Use get_menu first if unsure of exact titles.
 - delete_menu: Delete menu (params: id)
 REDIRECTS:
 - list_redirects: List redirects (params: first?, after?, query?)
@@ -335,11 +418,12 @@ REDIRECTS:
 - delete_redirect: Delete redirect (params: id)
 - bulk_delete_redirects: Bulk delete by search (params: search)`,
     {
-      action: z.enum(["list_menus", "get_menu", "create_menu", "update_menu", "delete_menu", "list_redirects", "create_redirect", "update_redirect", "delete_redirect", "bulk_delete_redirects"]),
+      action: z.enum(["list_menus", "get_menu", "create_menu", "update_menu", "patch_menu", "delete_menu", "list_redirects", "create_redirect", "update_redirect", "delete_redirect", "bulk_delete_redirects"]),
       id: z.string().optional(),
       handle: z.string().optional(),
       title: z.string().optional(),
       items: z.array(z.record(z.string(), z.unknown())).optional(),
+      ops: z.array(z.record(z.string(), z.unknown())).optional().describe("patch_menu: array of patch operations (see action description)"),
       first: z.number().optional(),
       after: z.string().optional(),
       query: z.string().optional(),
@@ -380,6 +464,32 @@ REDIRECTS:
             { id: p.id, title: p.title, handle: p.handle, items: p.items });
           check(res.data?.menuUpdate?.userErrors, "menuUpdate");
           return text(res.data?.menuUpdate?.menu);
+        }
+        case "patch_menu": {
+          if (!p.ops?.length) return fail("ops[] required for patch_menu");
+          type MenuFull = { id: string; title: string; handle: string; items: MenuItem[] };
+          // Resolve menu by id or handle
+          let menu: MenuFull | null = null;
+          if (p.id) {
+            const res = await gql<{ menu: MenuFull }>(`query($id:ID!){menu(id:$id){id title handle items{${MENU_ITEMS}}}}`, { id: p.id });
+            menu = res.data?.menu ?? null;
+          } else if (p.handle) {
+            const res = await gql<{ menus: { edges: Array<{ node: MenuFull }> } }>(`query($query:String!){menus(first:10,query:$query){edges{node{id title handle items{${MENU_ITEMS}}}}}}`, { query: `handle:${p.handle}` });
+            menu = res.data?.menus?.edges?.find((e) => e.node.handle === p.handle)?.node ?? null;
+          } else {
+            return fail("id or handle required for patch_menu");
+          }
+          if (!menu) return fail(`Menu not found: ${p.id ?? p.handle}`);
+          try {
+            const patched = applyPatches(menu.items, p.ops as unknown as PatchOp[]);
+            const res = await gql<{ menuUpdate: { menu: unknown; userErrors: Array<{ field: string[]; message: string }> } }>(
+              `mutation($id:ID!,$title:String!,$handle:String!,$items:[MenuItemUpdateInput!]!){menuUpdate(id:$id,title:$title,handle:$handle,items:$items){menu{id title handle items{${MENU_ITEMS}}}userErrors{field message}}}`,
+              { id: menu.id, title: p.title ?? menu.title, handle: p.handle ?? menu.handle, items: patched });
+            check(res.data?.menuUpdate?.userErrors, "menuUpdate");
+            return text(res.data?.menuUpdate?.menu);
+          } catch (e: unknown) {
+            return fail(`Patch failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
         case "delete_menu": {
           if (!p.id) return fail("id required");
