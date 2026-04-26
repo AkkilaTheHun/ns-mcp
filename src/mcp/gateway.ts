@@ -23,6 +23,47 @@ function checkErrors(userErrors: Array<{ field?: string[]; message: string }> | 
   throwIfUserErrors(userErrors, op);
 }
 
+// Auto-publish helpers. Newly created products and collections are NOT published to any sales
+// channel by default in the Shopify Admin API. Without this step, the storefront returns 404
+// for new collection URLs and new products are invisible to all channels even after status flips
+// to ACTIVE. We publish to every available sales channel on create (matches Shopify admin's
+// "publish to all sales channels" behavior).
+
+// Cache by resolved shop domain so the lookup runs once per shop, not once per create.
+const publicationIdCache = new Map<string, string[]>();
+
+function resolveShopForCache(shop?: string): string {
+  if (shop) return shop;
+  const sid = getCurrentSessionId();
+  return (sid ? getSessionShop(sid) : undefined) ?? "__default__";
+}
+
+async function getDefaultPublicationIds(shop?: string): Promise<string[]> {
+  const cacheKey = resolveShopForCache(shop);
+  const cached = publicationIdCache.get(cacheKey);
+  if (cached) return cached;
+  const res = await gql<{ publications: { edges: Array<{ node: { id: string; name: string } }> } }>(
+    `query { publications(first: 50) { edges { node { id name } } } }`, undefined, shop);
+  const ids = (res.data?.publications.edges ?? []).map(e => e.node.id);
+  publicationIdCache.set(cacheKey, ids);
+  return ids;
+}
+
+async function publishToDefaultChannels(resourceId: string, shop?: string): Promise<void> {
+  const publicationIds = await getDefaultPublicationIds(shop);
+  if (!publicationIds.length) return;
+  const res = await gql<{ publishablePublish: { userErrors: Array<{ field: string[]; message: string }> } }>(
+    `mutation Publish($id: ID!, $input: [PublicationInput!]!) {
+      publishablePublish(id: $id, input: $input) {
+        userErrors { field message }
+      }
+    }`,
+    { id: resourceId, input: publicationIds.map(pid => ({ publicationId: pid })) },
+    shop,
+  );
+  checkErrors(res.data?.publishablePublish?.userErrors, "publishablePublish");
+}
+
 // ============================================================
 // SHOP
 // ============================================================
@@ -254,10 +295,14 @@ export function registerProductGateway(server: McpServer): void {
           for (const k of ["title", "descriptionHtml", "handle", "vendor", "productType", "status", "tags", "templateSuffix", "productOptions", "collectionsToJoin", "seo", "metafields"] as const) {
             if (p[k] !== undefined) input[k] = p[k];
           }
-          const res = await gql<{ productCreate: { product: unknown; userErrors: Array<{ field: string[]; message: string }> } }>(
+          // Default new products to DRAFT so they don't appear publicly until reviewed.
+          if (input.status === undefined) input.status = "DRAFT";
+          const res = await gql<{ productCreate: { product: { id: string } | null; userErrors: Array<{ field: string[]; message: string }> } }>(
             `mutation($product:ProductCreateInput!){productCreate(product:$product){product{${PRODUCT_FULL}}userErrors{field message}}}`, { product: input });
           checkErrors(res.data?.productCreate?.userErrors, "productCreate");
-          return text(res.data?.productCreate?.product);
+          const created = res.data?.productCreate?.product;
+          if (created?.id) await publishToDefaultChannels(created.id);
+          return text(created);
         }
         case "update": {
           if (!p.id) return fail("id required");
@@ -351,9 +396,9 @@ export function registerCollectionGateway(server: McpServer): void {
 - list: List collections (params: first?, after?, query?, sortKey?, reverse?)
 - get: Get collection by ID or handle (params: id?, handle?)
 - count: Count collections (params: query?)
-- create: Create manual collection (params: title, descriptionHtml?, sortOrder?, image?, seo?{title,description}, metafields?)
-- create_smart: Create smart collection with rules (params: title, ruleSet{appliedDisjunctively, rules[{column, relation, condition}]}, descriptionHtml?, sortOrder?, seo?{title,description})
-- update: Update collection including SEO (params: id, title?, descriptionHtml?, sortOrder?, ruleSet?, seo?{title,description}, metafields?)
+- create: Create manual collection (params: title, handle?, descriptionHtml?, sortOrder?, image?, seo?{title,description}, metafields?)
+- create_smart: Create smart collection with rules (params: title, ruleSet{appliedDisjunctively, rules[{column, relation, condition}]}, handle?, descriptionHtml?, sortOrder?, seo?{title,description})
+- update: Update collection including SEO (params: id, handle?, title?, descriptionHtml?, sortOrder?, ruleSet?, seo?{title,description}, metafields?)
 - delete: Delete collection (params: id)
 - add_products: Add products to manual collection (params: collectionId, productIds[])
 - remove_products: Remove products (params: collectionId, productIds[])
@@ -401,18 +446,20 @@ export function registerCollectionGateway(server: McpServer): void {
         case "create_smart": {
           if (!p.title) return fail("title required");
           const input: Record<string, unknown> = {};
-          for (const k of ["title", "descriptionHtml", "sortOrder", "templateSuffix", "image", "ruleSet", "seo", "metafields"] as const) {
+          for (const k of ["title", "handle", "descriptionHtml", "sortOrder", "templateSuffix", "image", "ruleSet", "seo", "metafields"] as const) {
             if (p[k] !== undefined) input[k] = p[k];
           }
-          const res = await gql<{ collectionCreate: { collection: unknown; userErrors: Array<{ field: string[]; message: string }> } }>(
+          const res = await gql<{ collectionCreate: { collection: { id: string } | null; userErrors: Array<{ field: string[]; message: string }> } }>(
             `mutation($input:CollectionInput!){collectionCreate(input:$input){collection{${COLLECTION_FULL}}userErrors{field message}}}`, { input });
           checkErrors(res.data?.collectionCreate?.userErrors, "collectionCreate");
-          return text(res.data?.collectionCreate?.collection);
+          const created = res.data?.collectionCreate?.collection;
+          if (created?.id) await publishToDefaultChannels(created.id);
+          return text(created);
         }
         case "update": {
           if (!p.id) return fail("id required");
           const input: Record<string, unknown> = { id: p.id };
-          for (const k of ["title", "descriptionHtml", "sortOrder", "templateSuffix", "image", "ruleSet", "seo", "metafields"] as const) {
+          for (const k of ["title", "handle", "descriptionHtml", "sortOrder", "templateSuffix", "image", "ruleSet", "seo", "metafields"] as const) {
             if (p[k] !== undefined) input[k] = p[k];
           }
           const res = await gql<{ collectionUpdate: { collection: unknown; userErrors: Array<{ field: string[]; message: string }> } }>(
