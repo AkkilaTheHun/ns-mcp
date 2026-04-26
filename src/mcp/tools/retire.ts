@@ -319,13 +319,26 @@ async function setProductCollectionMetafields(
 }
 
 interface MenuItem {
-  id: string;
+  id?: string;
   title: string;
   type: string;
-  url: string;
-  resourceId: string | null;
-  tags: string[];
+  url?: string;
+  resourceId?: string | null;
+  tags?: string[];
   items?: MenuItem[];
+}
+
+/** Recursively strip falsy `id` and `url` fields so menuUpdate accepts new items. */
+function sanitizeMenuItems(items: MenuItem[]): MenuItem[] {
+  return items.map(it => {
+    const out: MenuItem = { title: it.title, type: it.type };
+    if (it.id) out.id = it.id;
+    if (it.url) out.url = it.url;
+    if (it.resourceId) out.resourceId = it.resourceId;
+    if (it.tags) out.tags = it.tags;
+    if (it.items?.length) out.items = sanitizeMenuItems(it.items);
+    return out;
+  });
 }
 
 interface MenuFull {
@@ -427,7 +440,7 @@ async function applyMenuOps(menuId: string, ops: PatchOp[], shop?: string): Prom
         userErrors { message }
       }
     }`,
-    { id: menu.id, title: menu.title, handle: menu.handle, items: patched },
+    { id: menu.id, title: menu.title, handle: menu.handle, items: sanitizeMenuItems(patched) },
     shop,
   );
   const errs = res.data?.menuUpdate?.userErrors ?? [];
@@ -689,9 +702,9 @@ async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Recor
     const ops: Array<Record<string, unknown>> = [];
     const redirectsToCreate: Array<{ path: string; target: string }> = [];
     for (const child of brandParent.items ?? []) {
-      // Filter-based: tags non-empty AND url contains "/Collection_" or "/collection_"
-      if (child.tags.length === 0) continue;
-      const tagMatch = child.tags[0].match(/^Collection_(.+)$/i) ?? child.tags[0].match(/^collection_(.+)$/i);
+      const childTags = child.tags ?? [];
+      if (childTags.length === 0) continue;
+      const tagMatch = childTags[0].match(/^Collection_(.+)$/i) ?? childTags[0].match(/^collection_(.+)$/i);
       if (!tagMatch) continue;
       const era = eraConsolidations[tagMatch[1].trim()] ?? tagMatch[1].trim();
       const newCollectionId = eraToCollectionId.get(era);
@@ -704,9 +717,8 @@ async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Recor
         id: child.id,
         fields: { type: "COLLECTION", resourceId: newCollectionId, tags: [] },
       });
-      // Old URL → new URL redirect
       const newHandle = `${brandHandle}-${slugify(era)}`;
-      redirectsToCreate.push({ path: child.url, target: `/collections/${newHandle}` });
+      if (child.url) redirectsToCreate.push({ path: child.url, target: `/collections/${newHandle}` });
     }
     // Add Retired Shades item if not already present.
     const hasRetiredItem = (brandParent.items ?? []).some(it => it.title === "Retired Shades");
