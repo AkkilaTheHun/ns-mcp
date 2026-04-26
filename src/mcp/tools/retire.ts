@@ -145,62 +145,72 @@ async function retireProducts(productIds: string[], shop?: string): Promise<Reti
 
   const errors: string[] = [];
 
-  // Step 1: productUpdate (status, templateSuffix, label metafields) + tagsAdd in batched mutations.
+  // Step 1: productUpdate (status, templateSuffix, label metafields) + tagsAdd, batched + parallelized.
+  const retireBatches: string[][] = [];
   for (let i = 0; i < productIds.length; i += RETIRE_BATCH) {
-    const batch = productIds.slice(i, i + RETIRE_BATCH);
-    const aliases = batch.map((id, idx) => {
-      const safe = id.replace(/"/g, "\\\"");
-      return `
-        p${idx}: productUpdate(product: {
-          id: "${safe}",
-          status: ACTIVE,
-          templateSuffix: "${TEMPLATE_SUFFIX}",
-          metafields: [
-            { namespace: "theme", key: "label", value: "[\\"Retired\\"]", type: "list.single_line_text_field" },
-            { namespace: "theme", key: "label_color", value: "[\\"${LABEL_COLOR}\\"]", type: "list.color" }
-          ]
-        }) { userErrors { field message } }
-        t${idx}: tagsAdd(id: "${safe}", tags: ["${RETIRED_TAG}"]) { userErrors { field message } }
-      `;
-    }).join("");
-    const mutation = `mutation { ${aliases} }`;
-    try {
-      const res = await shopifyGraphQL<Record<string, { userErrors?: Array<{ message: string }> }>>(mutation, undefined, shop);
-      for (let j = 0; j < batch.length; j++) {
-        const p = res.data?.[`p${j}`]?.userErrors ?? [];
-        const t = res.data?.[`t${j}`]?.userErrors ?? [];
-        for (const e of p) errors.push(`productUpdate ${batch[j]}: ${e.message}`);
-        for (const e of t) errors.push(`tagsAdd ${batch[j]}: ${e.message}`);
+    retireBatches.push(productIds.slice(i, i + RETIRE_BATCH));
+  }
+  const RETIRE_PARALLEL = 4;
+  for (let i = 0; i < retireBatches.length; i += RETIRE_PARALLEL) {
+    const chunk = retireBatches.slice(i, i + RETIRE_PARALLEL);
+    await Promise.all(chunk.map(async batch => {
+      const aliases = batch.map((id, idx) => {
+        const safe = id.replace(/"/g, "\\\"");
+        return `
+          p${idx}: productUpdate(product: {
+            id: "${safe}",
+            status: ACTIVE,
+            templateSuffix: "${TEMPLATE_SUFFIX}",
+            metafields: [
+              { namespace: "theme", key: "label", value: "[\\"Retired\\"]", type: "list.single_line_text_field" },
+              { namespace: "theme", key: "label_color", value: "[\\"${LABEL_COLOR}\\"]", type: "list.color" }
+            ]
+          }) { userErrors { field message } }
+          t${idx}: tagsAdd(id: "${safe}", tags: ["${RETIRED_TAG}"]) { userErrors { field message } }
+        `;
+      }).join("");
+      try {
+        const res = await shopifyGraphQL<Record<string, { userErrors?: Array<{ message: string }> }>>(`mutation { ${aliases} }`, undefined, shop);
+        for (let j = 0; j < batch.length; j++) {
+          const p = res.data?.[`p${j}`]?.userErrors ?? [];
+          const t = res.data?.[`t${j}`]?.userErrors ?? [];
+          for (const e of p) errors.push(`productUpdate ${batch[j]}: ${e.message}`);
+          for (const e of t) errors.push(`tagsAdd ${batch[j]}: ${e.message}`);
+        }
+      } catch (e) {
+        errors.push(`retire batch: ${(e as Error).message}`);
       }
-    } catch (e) {
-      errors.push(`batch ${i}–${i + batch.length}: ${(e as Error).message}`);
-    }
+    }));
   }
 
-  // Step 2: publish to all sales channels (Online Store + market catalogs are the critical ones —
-  // ARCHIVED products typically lose these).
+  // Step 2: publish to all sales channels.
   const pubIds = await getAllPublicationIds(shop);
   if (pubIds.length === 0) {
     errors.push("no sales-channel publications found — products won't be visible on storefront");
     return { processed: productIds.length, errors };
   }
   const pubInputs = pubIds.map(id => `{publicationId: "${id}"}`).join(", ");
+  const publishBatches: string[][] = [];
   for (let i = 0; i < productIds.length; i += PUBLISH_BATCH) {
-    const batch = productIds.slice(i, i + PUBLISH_BATCH);
-    const aliases = batch.map((id, idx) => {
-      const safe = id.replace(/"/g, "\\\"");
-      return `pub${idx}: publishablePublish(id: "${safe}", input: [${pubInputs}]) { userErrors { field message } }`;
-    }).join("\n");
-    const mutation = `mutation { ${aliases} }`;
-    try {
-      const res = await shopifyGraphQL<Record<string, { userErrors?: Array<{ message: string }> }>>(mutation, undefined, shop);
-      for (let j = 0; j < batch.length; j++) {
-        const errs = res.data?.[`pub${j}`]?.userErrors ?? [];
-        for (const e of errs) errors.push(`publish ${batch[j]}: ${e.message}`);
+    publishBatches.push(productIds.slice(i, i + PUBLISH_BATCH));
+  }
+  for (let i = 0; i < publishBatches.length; i += RETIRE_PARALLEL) {
+    const chunk = publishBatches.slice(i, i + RETIRE_PARALLEL);
+    await Promise.all(chunk.map(async batch => {
+      const aliases = batch.map((id, idx) => {
+        const safe = id.replace(/"/g, "\\\"");
+        return `pub${idx}: publishablePublish(id: "${safe}", input: [${pubInputs}]) { userErrors { field message } }`;
+      }).join("\n");
+      try {
+        const res = await shopifyGraphQL<Record<string, { userErrors?: Array<{ message: string }> }>>(`mutation { ${aliases} }`, undefined, shop);
+        for (let j = 0; j < batch.length; j++) {
+          const errs = res.data?.[`pub${j}`]?.userErrors ?? [];
+          for (const e of errs) errors.push(`publish ${batch[j]}: ${e.message}`);
+        }
+      } catch (e) {
+        errors.push(`publish batch: ${(e as Error).message}`);
       }
-    } catch (e) {
-      errors.push(`publish batch ${i}–${i + batch.length}: ${(e as Error).message}`);
-    }
+    }));
   }
 
   return { processed: productIds.length, errors };
@@ -477,16 +487,34 @@ async function createSmartCollection(
   );
   const errs = res.data?.collectionCreate?.userErrors ?? [];
   if (errs.length) return { error: errs.map(e => e.message).join("; ") };
-  const id = res.data?.collectionCreate?.collection?.id;
-  // Auto-publish to all channels (matches gateway create flow).
-  if (id) {
-    const pubIds = await getAllPublicationIds(shop);
-    if (pubIds.length) {
-      const pubInputs = pubIds.map(p => `{publicationId: "${p}"}`).join(", ");
-      await shopifyGraphQL(`mutation { publishablePublish(id: "${id}", input: [${pubInputs}]) { userErrors { message } } }`, undefined, shop);
+  return { id: res.data?.collectionCreate?.collection?.id };
+}
+
+/** Publish many resources to all sales channels in one batched mutation. */
+async function bulkPublishResources(resourceIds: string[], shop?: string): Promise<{ errors: string[] }> {
+  if (resourceIds.length === 0) return { errors: [] };
+  const pubIds = await getAllPublicationIds(shop);
+  if (pubIds.length === 0) return { errors: ["no publications found"] };
+  const pubInputs = pubIds.map(p => `{publicationId: "${p}"}`).join(", ");
+  const errors: string[] = [];
+  // Batch ~30 resources per mutation.
+  for (let i = 0; i < resourceIds.length; i += 30) {
+    const batch = resourceIds.slice(i, i + 30);
+    const aliases = batch.map((id, idx) => {
+      const safe = id.replace(/"/g, '\\"');
+      return `pub${idx}: publishablePublish(id: "${safe}", input: [${pubInputs}]) { userErrors { message } }`;
+    }).join("\n");
+    try {
+      const res = await shopifyGraphQL<Record<string, { userErrors?: Array<{ message: string }> }>>(`mutation { ${aliases} }`, undefined, shop);
+      for (let j = 0; j < batch.length; j++) {
+        const e = res.data?.[`pub${j}`]?.userErrors ?? [];
+        for (const err of e) errors.push(`publish ${batch[j]}: ${err.message}`);
+      }
+    } catch (e) {
+      errors.push(`publish batch: ${(e as Error).message}`);
     }
   }
-  return { id };
+  return { errors };
 }
 
 async function createRedirect(path: string, target: string, shop?: string): Promise<{ ok: boolean; error?: string }> {
@@ -504,8 +532,11 @@ async function createRedirect(path: string, target: string, shop?: string): Prom
   return { ok: true };
 }
 
-async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Record<string, string>; dryRun?: boolean }, shop?: string): Promise<BulkBrandReport> {
-  const { vendor, eraConsolidations = {}, dryRun = false } = args;
+async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Record<string, string>; dryRun?: boolean; phase?: "all" | "products" | "collections" | "menus" }, shop?: string): Promise<BulkBrandReport> {
+  const { vendor, eraConsolidations = {}, dryRun = false, phase = "all" } = args;
+  const runProducts = phase === "all" || phase === "products";
+  const runCollections = phase === "all" || phase === "collections";
+  const runMenus = phase === "all" || phase === "menus";
   const report: BulkBrandReport = {
     vendor,
     totalProducts: 0,
@@ -554,68 +585,96 @@ async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Recor
   }
 
   // 3. Set product.collection metafield on all products with known era.
-  const metafieldPairs = Array.from(productEra.entries()).map(([id, era]) => ({ id, era }));
-  const metafieldRes = await setProductCollectionMetafields(metafieldPairs, shop);
-  report.metafieldsSet = metafieldRes.count;
-  report.warnings.push(...metafieldRes.errors.slice(0, 5));
+  if (runProducts) {
+    const metafieldPairs = Array.from(productEra.entries()).map(([id, era]) => ({ id, era }));
+    const metafieldRes = await setProductCollectionMetafields(metafieldPairs, shop);
+    report.metafieldsSet = metafieldRes.count;
+    report.warnings.push(...metafieldRes.errors.slice(0, 5));
 
-  // 4. Retire archived products.
-  const archivedIds = products.filter(p => p.status === "ARCHIVED").map(p => p.id);
-  report.retired = await retireProducts(archivedIds, shop);
+    // 4. Retire archived products.
+    const archivedIds = products.filter(p => p.status === "ARCHIVED").map(p => p.id);
+    report.retired = await retireProducts(archivedIds, shop);
+  }
+
+  if (!runCollections && !runMenus) return report;
 
   // 5. Create per-era smart collections + brand retired collection.
+  // Parallelized in chunks of 5 to stay within Shopify rate limits + timeout budget.
   const brandHandle = slugify(vendor);
   const existing = await findCollectionsByHandlePrefix(brandHandle, shop);
   const eraToCollectionId = new Map<string, string>();
+  const newlyCreatedIds: string[] = [];
 
+  const erasToCreate: Array<{ era: string; handle: string; isActive: boolean }> = [];
   for (const [era, bucket] of byEra) {
-    const eraSlug = slugify(era);
-    const handle = `${brandHandle}-${eraSlug}`;
+    const handle = `${brandHandle}-${slugify(era)}`;
     const existingId = existing.get(handle);
     if (existingId) {
       report.collectionsSkipped.push({ handle, reason: "already exists" });
       eraToCollectionId.set(era, existingId);
       continue;
     }
-    const isActive = bucket.active.length > 0;
-    const rules: Array<{ column: string; relation: string; condition: string; conditionObjectId?: string }> = [
-      { column: "VENDOR", relation: "EQUALS", condition: vendor },
-      { column: "PRODUCT_METAFIELD_DEFINITION", relation: "EQUALS", condition: era, conditionObjectId: PRODUCT_COLLECTION_METAFIELD_DEF_GID },
-    ];
-    if (isActive) rules.push({ column: "TAG", relation: "NOT_EQUALS", condition: RETIRED_TAG });
-    const created = await createSmartCollection(`${vendor} - ${era}`, handle, rules, shop);
-    if (created.error) {
-      report.warnings.push(`create ${handle}: ${created.error}`);
-      continue;
+    erasToCreate.push({ era, handle, isActive: bucket.active.length > 0 });
+  }
+
+
+  const brandRetiredHandle = `${brandHandle}-retired-shades`;
+  let brandRetiredId = existing.get(brandRetiredHandle);
+
+  if (runCollections) {
+    const PARALLEL = 5;
+    for (let i = 0; i < erasToCreate.length; i += PARALLEL) {
+      const chunk = erasToCreate.slice(i, i + PARALLEL);
+      const results = await Promise.all(chunk.map(c => {
+        const rules: Array<{ column: string; relation: string; condition: string; conditionObjectId?: string }> = [
+          { column: "VENDOR", relation: "EQUALS", condition: vendor },
+          { column: "PRODUCT_METAFIELD_DEFINITION", relation: "EQUALS", condition: c.era, conditionObjectId: PRODUCT_COLLECTION_METAFIELD_DEF_GID },
+        ];
+        if (c.isActive) rules.push({ column: "TAG", relation: "NOT_EQUALS", condition: RETIRED_TAG });
+        return createSmartCollection(`${vendor} - ${c.era}`, c.handle, rules, shop)
+          .then(r => ({ ...c, ...r }));
+      }));
+      for (const r of results) {
+        if (r.error) {
+          report.warnings.push(`create ${r.handle}: ${r.error}`);
+          continue;
+        }
+        if (r.id) {
+          eraToCollectionId.set(r.era, r.id);
+          newlyCreatedIds.push(r.id);
+          report.collectionsCreated.push({ handle: r.handle, era: r.era, mode: r.isActive ? "active" : "retired" });
+        }
+      }
     }
-    if (created.id) {
-      eraToCollectionId.set(era, created.id);
-      report.collectionsCreated.push({ handle, era, mode: isActive ? "active" : "retired" });
+
+    if (!brandRetiredId) {
+      const created = await createSmartCollection(
+        `${vendor} - Retired Shades`,
+        brandRetiredHandle,
+        [
+          { column: "VENDOR", relation: "EQUALS", condition: vendor },
+          { column: "TAG", relation: "EQUALS", condition: RETIRED_TAG },
+        ],
+        shop,
+      );
+      if (created.id) {
+        brandRetiredId = created.id;
+        newlyCreatedIds.push(created.id);
+        report.collectionsCreated.push({ handle: brandRetiredHandle, era: "(retired)", mode: "brand" });
+      } else if (created.error) {
+        report.warnings.push(`create ${brandRetiredHandle}: ${created.error}`);
+      }
+    } else {
+      report.collectionsSkipped.push({ handle: brandRetiredHandle, reason: "already exists" });
+    }
+
+    if (newlyCreatedIds.length) {
+      const pubRes = await bulkPublishResources(newlyCreatedIds, shop);
+      report.warnings.push(...pubRes.errors.slice(0, 5));
     }
   }
 
-  // Brand retired collection.
-  const brandRetiredHandle = `${brandHandle}-retired-shades`;
-  let brandRetiredId = existing.get(brandRetiredHandle);
-  if (!brandRetiredId) {
-    const created = await createSmartCollection(
-      `${vendor} - Retired Shades`,
-      brandRetiredHandle,
-      [
-        { column: "VENDOR", relation: "EQUALS", condition: vendor },
-        { column: "TAG", relation: "EQUALS", condition: RETIRED_TAG },
-      ],
-      shop,
-    );
-    if (created.id) {
-      brandRetiredId = created.id;
-      report.collectionsCreated.push({ handle: brandRetiredHandle, era: "(retired)", mode: "brand" });
-    } else if (created.error) {
-      report.warnings.push(`create ${brandRetiredHandle}: ${created.error}`);
-    }
-  } else {
-    report.collectionsSkipped.push({ handle: brandRetiredHandle, reason: "already exists" });
-  }
+  if (!runMenus) return report;
 
   // 6. Patch Main Drop Down: find brand parent menu item, update each filter-URL child.
   const menu = await getMenu(MAIN_DROP_DOWN_MENU_GID, shop);
@@ -718,8 +777,9 @@ Returns a structured report.`,
       era: z.string().optional(),
       eraConsolidations: z.record(z.string(), z.string()).optional(),
       dryRun: z.boolean().optional(),
+      phase: z.enum(["all", "products", "collections", "menus"]).optional().describe("bulk_brand: split work into phases if 'all' times out. products=metafields+retire, collections=create+publish, menus=patch nav + redirects. Each phase is idempotent."),
     },
-    async ({ action, productIds, vendor, era, eraConsolidations, dryRun }) => {
+    async ({ action, productIds, vendor, era, eraConsolidations, dryRun, phase }) => {
       try {
         if (action === "products") {
           let ids = productIds ?? [];
@@ -732,7 +792,7 @@ Returns a structured report.`,
         }
         if (action === "bulk_brand") {
           if (!vendor) return fail("vendor required for bulk_brand");
-          const report = await bulkRetireBrand({ vendor, eraConsolidations, dryRun });
+          const report = await bulkRetireBrand({ vendor, eraConsolidations, dryRun, phase });
           return text(report);
         }
         return fail(`unknown action: ${action}`);
