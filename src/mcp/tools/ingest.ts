@@ -104,6 +104,10 @@ async function colorTargetedCrop(
     .raw()
     .toBuffer({ resolveWithObject: true });
 
+  // Center-bias: each pixel's contribution is multiplied by a falloff that
+  // prefers the central ~40% of the frame. Floors at 0.3 so edge pixels still
+  // count — we just don't let a large edge-mounted bottle dominate the centroid.
+  // This works for both flake polishes and opaque cremes (no texture assumption).
   let totalWeight = 0;
   let sumX = 0;
   let sumY = 0;
@@ -112,8 +116,13 @@ async function colorTargetedCrop(
       const idx = (y * info.width + x) * info.channels;
       const lab = rgbToLab(data[idx], data[idx + 1], data[idx + 2]);
       const dist = deltaE76(lab, targetLab);
-      const weight = Math.max(0, MATCH_THRESHOLD - dist);
-      if (weight > 0) {
+      const colorScore = Math.max(0, MATCH_THRESHOLD - dist);
+      if (colorScore > 0) {
+        const cxRel = x / info.width - 0.5;
+        const cyRel = y / info.height - 0.5;
+        const radial = Math.sqrt(cxRel * cxRel + cyRel * cyRel);
+        const centerWeight = Math.max(0.3, 1 - Math.min(1, radial * 1.5));
+        const weight = colorScore * centerWeight;
         totalWeight += weight;
         sumX += x * weight;
         sumY += y * weight;
