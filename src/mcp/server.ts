@@ -30,6 +30,7 @@ import { registerTranslateTool } from "./tools/translate.js";
 import { registerFetchVendorTool } from "./tools/fetch-vendor.js";
 import { registerRetireTool } from "./tools/retire.js";
 import { registerOrganizeImagesTool } from "./tools/organize-images.js";
+import { registerShadeIndexTool } from "./tools/shade-index.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -164,6 +165,9 @@ use the shopify_* tools.`,
 
   // Retirement workflow (NailStuff "Retired Shades" architecture)
   registerRetireTool(server);            // nailstuff_retire: retire products + bulk-migrate brands
+
+  // Vector catalog (Supabase pgvector)
+  registerShadeIndexTool(server);        // shade_index: store/search nail polish shade signatures by feature vector
 
   // Utility tools
   registerImageTools(server);            // compress_images: download, compress to JPEG, return base64
