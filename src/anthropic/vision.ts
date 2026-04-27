@@ -41,6 +41,7 @@ export async function analyzeImage(
   imageBase64: string,
   mimeType: string,
   context: { productName: string; brand: string; vendorHint?: string },
+  model: string = "claude-sonnet-4-6",
 ): Promise<ImageAnalysis> {
   const client = getClient();
 
@@ -65,7 +66,7 @@ ${context.vendorHint ? `The vendor describes the color/effect as "${context.vend
 Return ONLY the JSON object. No markdown fencing, no explanation.`;
 
   const response = await client.messages.create({
-    model: "claude-sonnet-4-6",
+    model,
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
     messages: [

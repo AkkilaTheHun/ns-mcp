@@ -40,6 +40,7 @@ export async function analyzeImage(
   imageBase64: string,
   mimeType: string,
   context: { productName: string; brand: string; vendorHint?: string },
+  model: string = "gemini-2.5-flash",
 ): Promise<ImageAnalysis> {
   const ai = getClient();
 
@@ -48,7 +49,7 @@ export async function analyzeImage(
     : `Product: "${context.productName}" by ${context.brand}.`;
 
   const result = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
+    model,
     contents: [
       {
         role: "user",

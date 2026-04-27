@@ -73,6 +73,7 @@ async function processImage(
   file: DriveFile,
   context: { productName: string; brand: string; vendorHint?: string },
   provider: VisionProvider,
+  model?: string,
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Resolve the image buffer: URL cache → Dropbox download → Drive download
@@ -105,6 +106,7 @@ async function processImage(
       analysisBuffer.toString("base64"),
       "image/jpeg",
       context,
+      model,
     );
 
     console.log(`[analyze] Vision done [${provider}] ${file.name}: ${analysis.imageType} (confidence: ${analysis.confidence})`);
@@ -156,8 +158,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders)"),
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
       provider: z.enum(["gemini", "claude"]).optional().default("gemini").describe("Vision provider: 'gemini' (default, Gemini 2.5 Flash) or 'claude' (Claude Sonnet 4.6)"),
+      model: z.string().optional().describe("Override the default model for the chosen provider. Examples: 'gemini-2.5-pro', 'claude-opus-4-7'. Defaults: gemini='gemini-2.5-flash', claude='claude-sonnet-4-6'."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -326,7 +329,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         };
       }
 
-      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider})`);
+      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""})`);
       const startTime = Date.now();
 
       const cap = maxImages ?? 50;
@@ -337,7 +340,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
-        return processImage(file, context, provider);
+        return processImage(file, context, provider, model);
       });
 
       const results: Array<AnalyzedImage & { subfolder: string | null }> = [];
