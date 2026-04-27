@@ -69,6 +69,13 @@ async function mapConcurrent<T, R>(
 }
 
 /** Download, compress, analyze a single image. */
+interface PreviewBuffers {
+  fileId: string;
+  filename: string;
+  full: { base64: string; sizeKB: number };
+  crop?: { base64: string; sizeKB: number };
+}
+
 async function processImage(
   file: DriveFile,
   context: { productName: string; brand: string; vendorHint?: string },
@@ -76,7 +83,8 @@ async function processImage(
   model?: string,
   fullWidth: number = 900,
   closeup: boolean = false,
-): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
+  preview: boolean = false,
+): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; preview?: PreviewBuffers; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Resolve the image buffer: URL cache → Dropbox download → Drive download
     let raw: Buffer;
@@ -111,6 +119,17 @@ async function processImage(
     }
 
     console.log(`[analyze] Prepared ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB${cropBuffer ? ` + ${Math.round(cropBuffer.length / 1024)} KB crop` : ""}`);
+
+    if (preview) {
+      return {
+        preview: {
+          fileId: file.id,
+          filename: file.name,
+          full: { base64: analysisBuffer.toString("base64"), sizeKB: Math.round(analysisBuffer.length / 1024) },
+          crop: cropBuffer ? { base64: cropBuffer.toString("base64"), sizeKB: Math.round(cropBuffer.length / 1024) } : undefined,
+        },
+      };
+    }
 
     const analyzeFn = provider === "claude" ? analyzeImageClaude : analyzeImageGemini;
     const analysis = await analyzeFn(
@@ -173,8 +192,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       model: z.string().optional().describe("Override the default model for the chosen provider. Examples: 'gemini-2.5-pro', 'claude-opus-4-7'. Defaults: gemini='gemini-2.5-flash', claude='claude-sonnet-4-6'."),
       fullWidth: z.number().optional().default(900).describe("Width in px to resize the full image to before sending to the vision model (default 900). Higher = more detail but more tokens."),
       closeup: z.boolean().optional().default(false).describe("When true, also send a Sharp attention-cropped 800x800 close-up alongside the full image in the same API call. Helps distinguish flake morphology (large ultrachrome shards vs small iridescent particles)."),
+      preview: z.boolean().optional().default(false).describe("Debug mode. When true, skip the vision API call entirely and return the prepared image buffers (full + crop if closeup=true) as renderable image blocks so you can inspect what would have been sent. Useful for verifying the attention crop isn't landing on a knuckle or bottle cap."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -343,7 +363,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         };
       }
 
-      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""}, fullWidth: ${fullWidth}, closeup: ${closeup})`);
+      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""}, fullWidth: ${fullWidth}, closeup: ${closeup}${preview ? ", PREVIEW" : ""})`);
       const startTime = Date.now();
 
       const cap = maxImages ?? 50;
@@ -354,8 +374,31 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
-        return processImage(file, context, provider, model, fullWidth, closeup);
+        return processImage(file, context, provider, model, fullWidth, closeup, preview);
       });
+
+      // Preview mode: return prepared image buffers as renderable blocks instead of vision analyses
+      if (preview) {
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
+        const previews = processed.filter((p) => p.preview).map((p) => p.preview!);
+        const previewErrors = processed.filter((p) => p.error).map((p) => p.error!);
+        content.push({
+          type: "text",
+          text: `Preview mode: ${previews.length} images prepared (fullWidth=${fullWidth}, closeup=${closeup}). No vision API calls were made.`,
+        });
+        for (const pv of previews) {
+          content.push({ type: "text", text: `=== ${pv.filename} — full (${pv.full.sizeKB} KB) ===` });
+          content.push({ type: "image", data: pv.full.base64, mimeType: "image/jpeg" });
+          if (pv.crop) {
+            content.push({ type: "text", text: `--- ${pv.filename} — attention crop (${pv.crop.sizeKB} KB) ---` });
+            content.push({ type: "image", data: pv.crop.base64, mimeType: "image/jpeg" });
+          }
+        }
+        if (previewErrors.length) {
+          content.push({ type: "text", text: `Errors:\n${previewErrors.map((e) => `  ${e.filename}: ${e.error}`).join("\n")}` });
+        }
+        return { content };
+      }
 
       const results: Array<AnalyzedImage & { subfolder: string | null }> = [];
       const errors: Array<{ fileId: string; filename: string; subfolder: string | null; error: string }> = [];
