@@ -5,6 +5,7 @@ import { listFolderImages, downloadFile, getFolderMeta, listSubfolders, type Dri
 import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, downloadSharedFile, listOwnFolderImages, listOwnSubfolders, downloadOwnFile } from "../../dropbox/client.js";
 import { analyzeImage as analyzeImageGemini, type ImageAnalysis } from "../../google/vision.js";
 import { analyzeImage as analyzeImageClaude } from "../../anthropic/vision.js";
+import { parseColor, rgbToLab, deltaE76 } from "../../util/color.js";
 
 type VisionProvider = "gemini" | "claude";
 
@@ -76,6 +77,71 @@ interface PreviewBuffers {
   crop?: { base64: string; sizeKB: number };
 }
 
+/**
+ * Crop centered on the weighted centroid of pixels matching `targetColor`.
+ * Samples at low resolution for speed, computes per-pixel LAB Delta-E, and
+ * weights matches inversely with distance. Returns null when the match score
+ * is too weak (caller should fall back to attention-based crop).
+ */
+async function colorTargetedCrop(
+  rotated: sharp.Sharp,
+  targetColor: string,
+  cropSize: number,
+): Promise<{ buffer: Buffer; matchStrength: number } | null> {
+  const SAMPLE = 200;
+  const MATCH_THRESHOLD = 30; // Delta-E distances above this contribute zero weight
+  const MIN_TOTAL_WEIGHT = 200; // below this, we treat the match as insufficient
+
+  const targetLab = parseColor(targetColor);
+
+  const fullMeta = await rotated.clone().metadata();
+  const fullW = fullMeta.width;
+  const fullH = fullMeta.height;
+  if (!fullW || !fullH) return null;
+
+  const { data, info } = await rotated.clone()
+    .resize(SAMPLE, SAMPLE, { fit: "inside" })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  let totalWeight = 0;
+  let sumX = 0;
+  let sumY = 0;
+  for (let y = 0; y < info.height; y++) {
+    for (let x = 0; x < info.width; x++) {
+      const idx = (y * info.width + x) * info.channels;
+      const lab = rgbToLab(data[idx], data[idx + 1], data[idx + 2]);
+      const dist = deltaE76(lab, targetLab);
+      const weight = Math.max(0, MATCH_THRESHOLD - dist);
+      if (weight > 0) {
+        totalWeight += weight;
+        sumX += x * weight;
+        sumY += y * weight;
+      }
+    }
+  }
+
+  if (totalWeight < MIN_TOTAL_WEIGHT) return null;
+
+  const cxSampled = sumX / totalWeight;
+  const cySampled = sumY / totalWeight;
+  const cx = (cxSampled / info.width) * fullW;
+  const cy = (cySampled / info.height) * fullH;
+
+  const cropW = Math.min(cropSize, fullW);
+  const cropH = Math.min(cropSize, fullH);
+  const left = Math.max(0, Math.min(fullW - cropW, Math.round(cx - cropW / 2)));
+  const top = Math.max(0, Math.min(fullH - cropH, Math.round(cy - cropH / 2)));
+
+  const buffer = await rotated.clone()
+    .extract({ left, top, width: cropW, height: cropH })
+    .resize({ width: cropSize, height: cropSize, fit: "cover" })
+    .jpeg({ quality: 92 })
+    .toBuffer();
+
+  return { buffer, matchStrength: totalWeight };
+}
+
 async function processImage(
   file: DriveFile,
   context: { productName: string; brand: string; vendorHint?: string },
@@ -84,6 +150,7 @@ async function processImage(
   fullWidth: number = 900,
   closeup: boolean = false,
   preview: boolean = false,
+  cropTargetColor?: string,
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; preview?: PreviewBuffers; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Resolve the image buffer: URL cache → Dropbox download → Drive download
@@ -111,11 +178,25 @@ async function processImage(
       .toBuffer();
 
     let cropBuffer: Buffer | undefined;
+    let cropStrategy: "color" | "attention" | undefined;
     if (closeup) {
-      cropBuffer = await rotated.clone()
-        .resize({ width: 800, height: 800, fit: "cover", position: sharp.strategy.attention })
-        .jpeg({ quality: 92 })
-        .toBuffer();
+      if (cropTargetColor) {
+        const colorCrop = await colorTargetedCrop(rotated, cropTargetColor, 800);
+        if (colorCrop) {
+          cropBuffer = colorCrop.buffer;
+          cropStrategy = "color";
+          console.log(`[analyze] ${file.name}: color-targeted crop on "${cropTargetColor}" (match weight ${Math.round(colorCrop.matchStrength)})`);
+        } else {
+          console.log(`[analyze] ${file.name}: color match for "${cropTargetColor}" too weak — falling back to attention crop`);
+        }
+      }
+      if (!cropBuffer) {
+        cropBuffer = await rotated.clone()
+          .resize({ width: 800, height: 800, fit: "cover", position: sharp.strategy.attention })
+          .jpeg({ quality: 92 })
+          .toBuffer();
+        cropStrategy = "attention";
+      }
     }
 
     console.log(`[analyze] Prepared ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB${cropBuffer ? ` + ${Math.round(cropBuffer.length / 1024)} KB crop` : ""}`);
@@ -193,8 +274,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       fullWidth: z.number().optional().default(900).describe("Width in px to resize the full image to before sending to the vision model (default 900). Higher = more detail but more tokens."),
       closeup: z.boolean().optional().default(false).describe("When true, also send a Sharp attention-cropped 800x800 close-up alongside the full image in the same API call. Helps distinguish flake morphology (large ultrachrome shards vs small iridescent particles)."),
       preview: z.boolean().optional().default(false).describe("Debug mode. When true, skip the vision API call entirely and return the prepared image buffers (full + crop if closeup=true) as renderable image blocks so you can inspect what would have been sent. Useful for verifying the attention crop isn't landing on a knuckle or bottle cap."),
+      cropTargetColor: z.string().optional().describe("Target color for the closeup crop. Accepts hex (e.g. '#a8c5e8') or a known name (pastel blue, pastel mint, pastel teal, pink, purple, lavender, periwinkle, grey, etc). When set, the crop is centered on the weighted centroid of pixels matching this color in LAB space — useful for swatcher folders where the catalog color is known and you want to avoid attention landing on bottle caps or skin. Falls back to attention crop if the color match is too weak."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview, cropTargetColor }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -363,7 +445,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         };
       }
 
-      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""}, fullWidth: ${fullWidth}, closeup: ${closeup}${preview ? ", PREVIEW" : ""})`);
+      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""}, fullWidth: ${fullWidth}, closeup: ${closeup}${cropTargetColor ? `, cropTargetColor: "${cropTargetColor}"` : ""}${preview ? ", PREVIEW" : ""})`);
       const startTime = Date.now();
 
       const cap = maxImages ?? 50;
@@ -374,7 +456,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
-        return processImage(file, context, provider, model, fullWidth, closeup, preview);
+        return processImage(file, context, provider, model, fullWidth, closeup, preview, cropTargetColor);
       });
 
       // Preview mode: return prepared image buffers as renderable blocks instead of vision analyses
