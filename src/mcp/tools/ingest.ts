@@ -74,6 +74,8 @@ async function processImage(
   context: { productName: string; brand: string; vendorHint?: string },
   provider: VisionProvider,
   model?: string,
+  fullWidth: number = 900,
+  closeup: boolean = false,
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Resolve the image buffer: URL cache → Dropbox download → Drive download
@@ -90,16 +92,25 @@ async function processImage(
     const rawSizeKB = Math.round(raw.length / 1024);
     console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
-    // Resize to 900px + high-quality JPEG for vision analysis.
-    // Sharp handles HEIC/HEIF/PNG/WebP natively.
-    // Quality 92 avoids compression artifacts that wash out fine glitter/flakies.
-    const analysisBuffer = await sharp(raw, { failOn: "none" })
-      .rotate()
-      .resize({ width: 900, withoutEnlargement: true })
+    // Sharp handles HEIC/HEIF/PNG/WebP natively. Quality 92 avoids compression
+    // artifacts that wash out fine glitter/flakies. clone() because pipelines
+    // are single-use.
+    const rotated = sharp(raw, { failOn: "none" }).rotate();
+
+    const analysisBuffer = await rotated.clone()
+      .resize({ width: fullWidth, withoutEnlargement: true })
       .jpeg({ quality: 92 })
       .toBuffer();
 
-    console.log(`[analyze] Prepared ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB`);
+    let cropBuffer: Buffer | undefined;
+    if (closeup) {
+      cropBuffer = await rotated.clone()
+        .resize({ width: 800, height: 800, fit: "cover", position: sharp.strategy.attention })
+        .jpeg({ quality: 92 })
+        .toBuffer();
+    }
+
+    console.log(`[analyze] Prepared ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB${cropBuffer ? ` + ${Math.round(cropBuffer.length / 1024)} KB crop` : ""}`);
 
     const analyzeFn = provider === "claude" ? analyzeImageClaude : analyzeImageGemini;
     const analysis = await analyzeFn(
@@ -107,6 +118,7 @@ async function processImage(
       "image/jpeg",
       context,
       model,
+      cropBuffer ? { base64: cropBuffer.toString("base64"), mimeType: "image/jpeg" } : undefined,
     );
 
     console.log(`[analyze] Vision done [${provider}] ${file.name}: ${analysis.imageType} (confidence: ${analysis.confidence})`);
@@ -159,8 +171,10 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
       provider: z.enum(["gemini", "claude"]).optional().default("gemini").describe("Vision provider: 'gemini' (default, Gemini 2.5 Flash) or 'claude' (Claude Sonnet 4.6)"),
       model: z.string().optional().describe("Override the default model for the chosen provider. Examples: 'gemini-2.5-pro', 'claude-opus-4-7'. Defaults: gemini='gemini-2.5-flash', claude='claude-sonnet-4-6'."),
+      fullWidth: z.number().optional().default(900).describe("Width in px to resize the full image to before sending to the vision model (default 900). Higher = more detail but more tokens."),
+      closeup: z.boolean().optional().default(false).describe("When true, also send a Sharp attention-cropped 800x800 close-up alongside the full image in the same API call. Helps distinguish flake morphology (large ultrachrome shards vs small iridescent particles)."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -329,7 +343,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         };
       }
 
-      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""})`);
+      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""}, fullWidth: ${fullWidth}, closeup: ${closeup})`);
       const startTime = Date.now();
 
       const cap = maxImages ?? 50;
@@ -340,7 +354,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
-        return processImage(file, context, provider, model);
+        return processImage(file, context, provider, model, fullWidth, closeup);
       });
 
       const results: Array<AnalyzedImage & { subfolder: string | null }> = [];

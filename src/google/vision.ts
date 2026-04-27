@@ -41,6 +41,7 @@ export async function analyzeImage(
   mimeType: string,
   context: { productName: string; brand: string; vendorHint?: string },
   model: string = "gemini-2.5-flash",
+  crop?: { base64: string; mimeType: string },
 ): Promise<ImageAnalysis> {
   const ai = getClient();
 
@@ -48,17 +49,18 @@ export async function analyzeImage(
     ? `Product: "${context.productName}" by ${context.brand}. Vendor describes it as: "${context.vendorHint}".`
     : `Product: "${context.productName}" by ${context.brand}.`;
 
-  const result = await ai.models.generateContent({
-    model,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          { inlineData: { mimeType, data: imageBase64 } },
-          {
-            text: `${SYSTEM_PROMPT}
+  const closeupLine = crop
+    ? `\nTwo images are provided: the FIRST shows the full swatch and overall color; the SECOND is a zoomed-in attention crop showing flake morphology in detail. Use the second image specifically to judge flake size (small pearly = iridescent vs. large discrete shards = ultrachrome).`
+    : "";
 
-${contextLine}
+  const parts: Array<{ inlineData: { mimeType: string; data: string } } | { text: string }> = [
+    { inlineData: { mimeType, data: imageBase64 } },
+  ];
+  if (crop) parts.push({ inlineData: { mimeType: crop.mimeType, data: crop.base64 } });
+  parts.push({
+    text: `${SYSTEM_PROMPT}
+
+${contextLine}${closeupLine}
 
 Analyze this image and return a JSON object with these exact fields:
 - "imageType": one of "bottle_in_hand", "bottle_standalone", "swatch_on_nails", "swatch_wheel", "swatch_stick", "lifestyle", "layering_demo", "group_shot", "macro_detail", "unknown"
@@ -73,8 +75,14 @@ Analyze this image and return a JSON object with these exact fields:
 ${context.vendorHint ? `The vendor describes the color/effect as "${context.vendorHint}". If what you observe contradicts this, trust your eyes and note the discrepancy in the alt text or by lowering confidence.` : ""}
 
 Return ONLY the JSON object. No markdown fencing, no explanation.`,
-          },
-        ],
+  });
+
+  const result = await ai.models.generateContent({
+    model,
+    contents: [
+      {
+        role: "user",
+        parts,
       },
     ],
   });

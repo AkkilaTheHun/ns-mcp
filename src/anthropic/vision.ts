@@ -42,6 +42,7 @@ export async function analyzeImage(
   mimeType: string,
   context: { productName: string; brand: string; vendorHint?: string },
   model: string = "claude-sonnet-4-6",
+  crop?: { base64: string; mimeType: string },
 ): Promise<ImageAnalysis> {
   const client = getClient();
 
@@ -49,7 +50,11 @@ export async function analyzeImage(
     ? `Product: "${context.productName}" by ${context.brand}. Vendor describes it as: "${context.vendorHint}".`
     : `Product: "${context.productName}" by ${context.brand}.`;
 
-  const userText = `${contextLine}
+  const closeupLine = crop
+    ? `\nTwo images are provided: the FIRST shows the full swatch and overall color; the SECOND is a zoomed-in attention crop showing flake morphology in detail. Use the second image specifically to judge flake size (small pearly = iridescent vs. large discrete shards = ultrachrome).`
+    : "";
+
+  const userText = `${contextLine}${closeupLine}
 
 Analyze this image and return a JSON object with these exact fields:
 - "imageType": one of "bottle_in_hand", "bottle_standalone", "swatch_on_nails", "swatch_wheel", "swatch_stick", "lifestyle", "layering_demo", "group_shot", "macro_detail", "unknown"
@@ -65,22 +70,25 @@ ${context.vendorHint ? `The vendor describes the color/effect as "${context.vend
 
 Return ONLY the JSON object. No markdown fencing, no explanation.`;
 
+  const content: Anthropic.ContentBlockParam[] = [
+    {
+      type: "image",
+      source: { type: "base64", media_type: normalizeMediaType(mimeType), data: imageBase64 },
+    },
+  ];
+  if (crop) {
+    content.push({
+      type: "image",
+      source: { type: "base64", media_type: normalizeMediaType(crop.mimeType), data: crop.base64 },
+    });
+  }
+  content.push({ type: "text", text: userText });
+
   const response = await client.messages.create({
     model,
     max_tokens: 1024,
     system: SYSTEM_PROMPT,
-    messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: { type: "base64", media_type: normalizeMediaType(mimeType), data: imageBase64 },
-          },
-          { type: "text", text: userText },
-        ],
-      },
-    ],
+    messages: [{ role: "user", content }],
   });
 
   const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
