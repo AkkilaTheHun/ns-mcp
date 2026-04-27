@@ -51,7 +51,9 @@ export async function analyzeImage(
     : `Product: "${context.productName}" by ${context.brand}.`;
 
   const closeupLine = crop
-    ? `\nTwo images are provided: the FIRST shows the full swatch and overall color; the SECOND is a zoomed-in attention crop showing flake morphology in detail. Use the second image specifically to judge flake size (small pearly = iridescent vs. large discrete shards = ultrachrome).`
+    ? `\nTwo images are provided. Use them with the following hierarchy — do not average between them:
+- IMAGE 1 (full): AUTHORITATIVE for base color and overall polish identification. The base color you report MUST come from this image. The full frame averages out topcoat shine, lighting hotspots, and flake density distortions, so it is the most reliable view of the polish's true color.
+- IMAGE 2 (closeup): ONLY for flake morphology — particle size and shape. Use it to decide whether flakes are small pearly iridescent particles or large discrete ultrachrome shards. Do NOT use the closeup to override the base color reading from image 1; zoomed-in pixels can show green/blue/grey shifts that are topcoat artifacts, not the actual polish color.`
     : "";
 
   const userText = `${contextLine}${closeupLine}
