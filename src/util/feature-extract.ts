@@ -66,28 +66,64 @@ function safeHexToLab(hex: string | undefined): Lab | null {
   }
 }
 
+// Sorted longest-first so "pastel blue" matches before "blue", "rose gold"
+// before "gold" / "rose", etc.
+const COLOR_CANDIDATES = [
+  "rose gold", "pastel blue", "powder blue", "light blue", "sky blue",
+  "pastel mint", "pastel teal", "pastel pink", "pastel purple",
+  "periwinkle", "turquoise", "burgundy", "charcoal", "magenta", "fuchsia",
+  "lavender", "indigo", "violet", "maroon", "bronze", "copper", "silver",
+  "amber", "coral", "cream", "ivory", "brown", "olive", "plum", "navy",
+  "lilac", "beige", "sage", "mint", "teal", "rose", "gold", "blue",
+  "pink", "purple", "green", "red", "orange", "yellow", "grey", "gray",
+  "white", "black", "tan",
+].sort((a, b) => b.length - a.length);
+
 function colorLabelToLab(label: string): Lab | null {
-  // Try to parse a color name from the label using our existing color util.
-  // Falls back to null if the label isn't a recognized color word.
-  const cleaned = label.toLowerCase().replace(/[^a-z #]/g, "").trim();
-  // Use the longest matching known color name in the label.
-  const candidates = [
-    "pastel blue", "light blue", "powder blue", "blue",
-    "pastel mint", "mint", "pastel teal", "teal",
-    "pastel pink", "pink", "pastel purple", "purple",
-    "lavender", "lilac", "periwinkle",
-    "grey", "gray", "green", "red", "orange", "yellow", "white", "black",
-  ];
-  for (const c of candidates.sort((a, b) => b.length - a.length)) {
-    if (cleaned.includes(c)) {
-      try {
-        return parseColor(c);
-      } catch {
-        return null;
+  // Sonnet labels often pack multiple colors into one entry like
+  // "copper/gold ultrachrome flakes" or "pink/magenta flakes". Split on
+  // common separators and try the first match found across all parts.
+  const parts = label.toLowerCase().split(/[\/,]|\s+(?:and|or)\s+/);
+  for (const part of parts) {
+    const cleaned = part.replace(/[^a-z #]/g, "").trim();
+    if (!cleaned) continue;
+    for (const c of COLOR_CANDIDATES) {
+      if (cleaned.includes(c)) {
+        try {
+          return parseColor(c);
+        } catch {
+          // try next candidate
+        }
       }
     }
   }
   return null;
+}
+
+/**
+ * Like colorLabelToLab but returns ALL color matches found in the label,
+ * useful when one Sonnet entry packs multiple flake colors.
+ */
+function colorLabelToAllLabs(label: string): Lab[] {
+  const labs: Lab[] = [];
+  const seen = new Set<string>();
+  const parts = label.toLowerCase().split(/[\/,]|\s+(?:and|or)\s+/);
+  for (const part of parts) {
+    const cleaned = part.replace(/[^a-z #]/g, "").trim();
+    if (!cleaned) continue;
+    for (const c of COLOR_CANDIDATES) {
+      if (cleaned.includes(c) && !seen.has(c)) {
+        try {
+          labs.push(parseColor(c));
+          seen.add(c);
+          break; // one color per part is plenty
+        } catch {
+          // try next candidate
+        }
+      }
+    }
+  }
+  return labs;
 }
 
 /** Extract a hex string from a dominantColors entry, falling back to color-name parsing. */
@@ -128,23 +164,28 @@ export function extractFlakeAttrs(effects: string[], dominantColors: ImageAnalys
   else if (hasUltrachrome) flakeSize = "large";
   else if (hasIridescent || hasHolographic) flakeSize = "fine";
 
-  // Flake colors: take the 2nd and 3rd entries from dominantColors as flake colors
-  // (the 1st is usually the base). Convert to hex via direct hex codes if present
-  // OR fall back to color-name resolution from the label.
+  // Flake colors: scan the 2nd+ entries from dominantColors (the 1st is the
+  // base color). For each entry, harvest all color words found (handles
+  // compound labels like "copper/gold ultrachrome flakes" → both copper AND
+  // gold). Cap at 3 unique flake colors total.
   const flakeColorsHex: string[] = [];
+  const seenHex = new Set<string>();
   for (let i = 1; i < dominantColors.length && flakeColorsHex.length < 3; i++) {
     const entry = dominantColors[i];
-    if (typeof entry === "string") {
-      const lab = colorLabelToLab(entry);
-      if (lab) flakeColorsHex.push(labToHex(lab));
-      continue;
-    }
-    if (entry.hex) {
+    if (typeof entry === "object" && entry.hex && !seenHex.has(entry.hex)) {
       flakeColorsHex.push(entry.hex);
+      seenHex.add(entry.hex);
       continue;
     }
-    const lab = colorLabelToLab(entry.label);
-    if (lab) flakeColorsHex.push(labToHex(lab));
+    const label = typeof entry === "string" ? entry : entry.label;
+    for (const lab of colorLabelToAllLabs(label)) {
+      if (flakeColorsHex.length >= 3) break;
+      const hex = labToHex(lab);
+      if (!seenHex.has(hex)) {
+        flakeColorsHex.push(hex);
+        seenHex.add(hex);
+      }
+    }
   }
 
   return {

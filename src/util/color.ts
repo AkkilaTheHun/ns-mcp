@@ -45,29 +45,61 @@ export function deltaE76(a: Lab, b: Lab): number {
 }
 
 const COLOR_NAMES: Record<string, string> = {
+  // Blues / cools
   "pastel blue": "#b5d3e7",
   "light blue": "#aacae8",
   "powder blue": "#c0d8e8",
+  "sky blue": "#7ab8d8",
   "blue": "#5a8fc4",
+  "navy": "#1f3066",
+  "indigo": "#4858a0",
+  "periwinkle": "#a8b8e0",
+  // Greens
   "pastel mint": "#c8e6d3",
   "mint": "#a8e0c0",
   "pastel teal": "#b8e3d6",
   "teal": "#5fb5a8",
+  "turquoise": "#48c0bc",
+  "sage": "#a8c4a4",
+  "green": "#80b890",
+  "olive": "#808040",
+  // Pinks / reds
   "pastel pink": "#f5c4d3",
   "pink": "#f0a8c0",
+  "rose": "#e08098",
+  "magenta": "#d040a0",
+  "fuchsia": "#e060c0",
+  "red": "#c46060",
+  "burgundy": "#702030",
+  "maroon": "#702028",
+  "coral": "#f08070",
+  // Purples
   "pastel purple": "#c5a8d3",
   "purple": "#9070a8",
   "lavender": "#c5a8d3",
   "lilac": "#c5a8d3",
-  "periwinkle": "#a8b8e0",
+  "violet": "#8060c0",
+  "plum": "#704060",
+  // Yellows / oranges / metals
+  "orange": "#e8a060",
+  "amber": "#d8a040",
+  "yellow": "#e8d060",
+  "gold": "#d4a040",
+  "copper": "#b46838",
+  "bronze": "#a06030",
+  "rose gold": "#d8a098",
+  "silver": "#c8c8c8",
+  // Neutrals
+  "white": "#f0f0f0",
+  "ivory": "#ece8d8",
+  "cream": "#e8e0c8",
+  "beige": "#d8c4a8",
+  "tan": "#c4a880",
+  "brown": "#80583a",
+  "charcoal": "#303030",
+  "black": "#202020",
   "grey": "#b0b0b0",
   "gray": "#b0b0b0",
-  "green": "#80b890",
-  "red": "#c46060",
-  "orange": "#e8a060",
-  "yellow": "#e8d060",
-  "white": "#f0f0f0",
-  "black": "#202020",
 };
 
 /** Resolve a color string (hex like "#rrggbb" or a known name) to LAB coordinates. */
