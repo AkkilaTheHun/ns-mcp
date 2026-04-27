@@ -129,11 +129,22 @@ export function extractFlakeAttrs(effects: string[], dominantColors: ImageAnalys
   else if (hasIridescent || hasHolographic) flakeSize = "fine";
 
   // Flake colors: take the 2nd and 3rd entries from dominantColors as flake colors
-  // (the 1st is usually the base). Convert to hex when possible.
+  // (the 1st is usually the base). Convert to hex via direct hex codes if present
+  // OR fall back to color-name resolution from the label.
   const flakeColorsHex: string[] = [];
   for (let i = 1; i < dominantColors.length && flakeColorsHex.length < 3; i++) {
-    const { hex } = entryToHexAndLab(dominantColors[i]);
-    if (hex) flakeColorsHex.push(hex);
+    const entry = dominantColors[i];
+    if (typeof entry === "string") {
+      const lab = colorLabelToLab(entry);
+      if (lab) flakeColorsHex.push(labToHex(lab));
+      continue;
+    }
+    if (entry.hex) {
+      flakeColorsHex.push(entry.hex);
+      continue;
+    }
+    const lab = colorLabelToLab(entry.label);
+    if (lab) flakeColorsHex.push(labToHex(lab));
   }
 
   return {

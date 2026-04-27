@@ -119,19 +119,58 @@ async function recomputeShadeAggregate(shadeId: number): Promise<void> {
         .map((s) => s / embeddings.length)
     : null;
 
-  // Vote on flake attributes (≥50% of images claim the attr → true)
-  type Effect = "ultrachrome" | "iridescent" | "holographic" | "thermal" | "magnetic";
-  const flakes: Record<Effect, number> = { ultrachrome: 0, iridescent: 0, holographic: 0, thermal: 0, magnetic: 0 };
-  for (const img of images) {
-    const text = (img.observed_effects ?? []).join(" ").toLowerCase();
-    if (/ultrachrome|chameleon\s+(flak|shard)/.test(text)) flakes.ultrachrome++;
-    if (/iridescent|pearly\s+shimmer/.test(text)) flakes.iridescent++;
-    if (/holo|holographic/.test(text)) flakes.holographic++;
-    if (/thermal|color[\- ]chang/.test(text)) flakes.thermal++;
-    if (/magnetic/.test(text)) flakes.magnetic++;
+  // Re-derive structured attrs by running the same per-image extractor over
+  // each photo's analysis-shaped data, then aggregate.
+  type Img = { observed_effects?: string[] | null; dominant_colors?: unknown };
+  const perImageFeatures = (images as Img[]).map((img) =>
+    extractAndEmbed({
+      observedEffects: img.observed_effects ?? [],
+      dominantColors: (img.dominant_colors as ImageAnalysisLike["dominantColors"]) ?? [],
+    }),
+  );
+
+  // Boolean attrs: ≥50% vote
+  const counts = { ultrachrome: 0, iridescent: 0, holographic: 0, thermal: 0, magnetic: 0 };
+  for (const f of perImageFeatures) {
+    if (f.flake.hasUltrachrome) counts.ultrachrome++;
+    if (f.flake.hasIridescent) counts.iridescent++;
+    if (f.flake.hasHolographic) counts.holographic++;
+    if (f.flake.hasThermal) counts.thermal++;
+    if (f.flake.hasMagnetic) counts.magnetic++;
   }
-  const threshold = images.length / 2;
-  const has = (k: Effect) => flakes[k] > threshold;
+  const threshold = perImageFeatures.length / 2;
+
+  // finish_type: pick the most common non-null value (mode)
+  const finishCounts = new Map<string, number>();
+  for (const f of perImageFeatures) {
+    if (f.flake.finishType) {
+      finishCounts.set(f.flake.finishType, (finishCounts.get(f.flake.finishType) ?? 0) + 1);
+    }
+  }
+  const finishType = [...finishCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
+  // flake_size: take the LARGEST size mentioned across photos (large > medium > fine > none)
+  const sizeRank = { none: 0, fine: 1, medium: 2, large: 3 } as const;
+  type SizeKey = keyof typeof sizeRank;
+  let maxSize: SizeKey = "none";
+  for (const f of perImageFeatures) {
+    if (sizeRank[f.flake.flakeSize] > sizeRank[maxSize]) {
+      maxSize = f.flake.flakeSize;
+    }
+  }
+  const flakeSize = maxSize === "none" ? null : maxSize;
+
+  // flake_colors_hex: aggregate top-3 most frequent across all images
+  const colorCounts = new Map<string, number>();
+  for (const f of perImageFeatures) {
+    for (const hex of f.flake.flakeColorsHex) {
+      colorCounts.set(hex, (colorCounts.get(hex) ?? 0) + 1);
+    }
+  }
+  const flakeColorsHex = [...colorCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([hex]) => hex);
 
   await supabase
     .from("shade_signatures")
@@ -139,11 +178,14 @@ async function recomputeShadeAggregate(shadeId: number): Promise<void> {
       base_color_lab: avgLab,
       base_color_hex: avgLab ? labToHex(avgLab) : null,
       embedding: avgEmb,
-      has_ultrachrome: has("ultrachrome"),
-      has_iridescent: has("iridescent"),
-      has_holographic: has("holographic"),
-      has_thermal: has("thermal"),
-      has_magnetic: has("magnetic"),
+      finish_type: finishType,
+      flake_size: flakeSize,
+      flake_colors_hex: flakeColorsHex.length ? flakeColorsHex : null,
+      has_ultrachrome: counts.ultrachrome > threshold,
+      has_iridescent: counts.iridescent > threshold,
+      has_holographic: counts.holographic > threshold,
+      has_thermal: counts.thermal > threshold,
+      has_magnetic: counts.magnetic > threshold,
       photo_count: images.length,
     })
     .eq("id", shadeId);
