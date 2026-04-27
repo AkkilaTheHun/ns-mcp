@@ -707,9 +707,12 @@ async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Recor
       const tagMatch = childTags[0].match(/^Collection_(.+)$/i) ?? childTags[0].match(/^collection_(.+)$/i);
       if (!tagMatch) continue;
       const era = eraConsolidations[tagMatch[1].trim()] ?? tagMatch[1].trim();
-      const newCollectionId = eraToCollectionId.get(era);
+      // Try direct era match first, then fall back to handle-based lookup (handles casing variations
+      // between menu tag and product tag, e.g., "Abandon the Ordinary" vs "Abandon The Ordinary").
+      const handleByEra = `${brandHandle}-${slugify(era)}`;
+      const newCollectionId = eraToCollectionId.get(era) ?? existing.get(handleByEra);
       if (!newCollectionId) {
-        report.warnings.push(`menu item "${child.title}": no new collection found for era "${era}"`);
+        report.warnings.push(`menu item "${child.title}": no new collection found for era "${era}" (tried handle ${handleByEra})`);
         continue;
       }
       ops.push({
