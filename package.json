@@ -15,6 +15,7 @@
   },
   "author": "akkila",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.91.1",
     "@google-analytics/data": "^5.2.1",
     "@google/genai": "^1.50.1",
     "@modelcontextprotocol/sdk": "^1.29.0",

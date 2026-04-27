@@ -3,7 +3,10 @@ import { z } from "zod";
 import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, listSubfolders, type DriveFile } from "../../google/drive.js";
 import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, downloadSharedFile, listOwnFolderImages, listOwnSubfolders, downloadOwnFile } from "../../dropbox/client.js";
-import { analyzeImage, type ImageAnalysis } from "../../google/vision.js";
+import { analyzeImage as analyzeImageGemini, type ImageAnalysis } from "../../google/vision.js";
+import { analyzeImage as analyzeImageClaude } from "../../anthropic/vision.js";
+
+type VisionProvider = "gemini" | "claude";
 
 /** Cache for URL-downloaded buffers so processImage can access them by "fileId" (which is the URL). */
 const urlBufferCache = new Map<string, Buffer>();
@@ -69,6 +72,7 @@ async function mapConcurrent<T, R>(
 async function processImage(
   file: DriveFile,
   context: { productName: string; brand: string; vendorHint?: string },
+  provider: VisionProvider,
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Resolve the image buffer: URL cache → Dropbox download → Drive download
@@ -85,7 +89,7 @@ async function processImage(
     const rawSizeKB = Math.round(raw.length / 1024);
     console.log(`[analyze] Downloaded ${file.name} (${rawSizeKB} KB, ${file.mimeType})`);
 
-    // Resize to 900px + high-quality JPEG for Gemini analysis.
+    // Resize to 900px + high-quality JPEG for vision analysis.
     // Sharp handles HEIC/HEIF/PNG/WebP natively.
     // Quality 92 avoids compression artifacts that wash out fine glitter/flakies.
     const analysisBuffer = await sharp(raw, { failOn: "none" })
@@ -96,13 +100,14 @@ async function processImage(
 
     console.log(`[analyze] Prepared ${file.name}: ${rawSizeKB} KB → ${Math.round(analysisBuffer.length / 1024)} KB`);
 
-    const analysis = await analyzeImage(
+    const analyzeFn = provider === "claude" ? analyzeImageClaude : analyzeImageGemini;
+    const analysis = await analyzeFn(
       analysisBuffer.toString("base64"),
       "image/jpeg",
       context,
     );
 
-    console.log(`[analyze] Vision done ${file.name}: ${analysis.imageType} (confidence: ${analysis.confidence})`);
+    console.log(`[analyze] Vision done [${provider}] ${file.name}: ${analysis.imageType} (confidence: ${analysis.confidence})`);
 
     return {
       result: {
@@ -124,8 +129,10 @@ async function processImage(
 export function registerIngestTools(server: McpServer): void {
   server.tool(
     "analyze_images",
-    `Analyze product images via AI vision (Gemini). Downloads, compresses via Sharp,
-and returns structured analysis per image.
+    `Analyze product images via AI vision (Gemini or Claude). Downloads, compresses via Sharp,
+and returns structured analysis per image. Pass provider="claude" to use Anthropic Claude
+Sonnet 4.6 instead of the default Gemini 2.5 Flash — useful for A/B comparing outputs on
+the same image.
 
 Accepts TWO input modes (provide one or both):
 - folderId: Google Drive folder ID OR Dropbox URL. Supports recursive: true to traverse subfolders.
@@ -148,8 +155,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
       recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders)"),
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
+      provider: z.enum(["gemini", "claude"]).optional().default("gemini").describe("Vision provider: 'gemini' (default, Gemini 2.5 Flash) or 'claude' (Claude Sonnet 4.6)"),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -318,7 +326,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         };
       }
 
-      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive})`);
+      console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider})`);
       const startTime = Date.now();
 
       const cap = maxImages ?? 50;
@@ -329,7 +337,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
-        return processImage(file, context);
+        return processImage(file, context, provider);
       });
 
       const results: Array<AnalyzedImage & { subfolder: string | null }> = [];
@@ -367,6 +375,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         folderId,
         folderName,
         recursive,
+        provider,
         productName,
         brand,
         totalImagesFound: allFiles.length,
