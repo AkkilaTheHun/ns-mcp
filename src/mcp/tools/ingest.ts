@@ -274,9 +274,10 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       fullWidth: z.number().optional().default(900).describe("Width in px to resize the full image to before sending to the vision model (default 900). Higher = more detail but more tokens."),
       closeup: z.boolean().optional().default(false).describe("When true, also send a Sharp attention-cropped 800x800 close-up alongside the full image in the same API call. Helps distinguish flake morphology (large ultrachrome shards vs small iridescent particles)."),
       preview: z.boolean().optional().default(false).describe("Debug mode. When true, skip the vision API call entirely and return the prepared image buffers (full + crop if closeup=true) as renderable image blocks so you can inspect what would have been sent. Useful for verifying the attention crop isn't landing on a knuckle or bottle cap."),
+      previewFormat: z.enum(["image", "data"]).optional().default("image").describe("Format for preview output. 'image' (default) returns inline image content blocks (rendered by Claude.ai). 'data' returns JSON with base64 strings — use this for Claude Code where inline image rendering doesn't work in most terminals; the agent can then decode to /tmp and open them with the OS image viewer."),
       cropTargetColor: z.string().optional().describe("Target color for the closeup crop. Accepts hex (e.g. '#a8c5e8') or a known name (pastel blue, pastel mint, pastel teal, pink, purple, lavender, periwinkle, grey, etc). When set, the crop is centered on the weighted centroid of pixels matching this color in LAB space — useful for swatcher folders where the catalog color is known and you want to avoid attention landing on bottle caps or skin. Falls back to attention crop if the color match is too weak."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview, cropTargetColor }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview, previewFormat, cropTargetColor }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -461,9 +462,29 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
 
       // Preview mode: return prepared image buffers as renderable blocks instead of vision analyses
       if (preview) {
-        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
         const previews = processed.filter((p) => p.preview).map((p) => p.preview!);
         const previewErrors = processed.filter((p) => p.error).map((p) => p.error!);
+
+        if (previewFormat === "data") {
+          // JSON output — for Claude Code where inline image blocks don't render
+          const summary = {
+            mode: "preview",
+            fullWidth,
+            closeup,
+            cropTargetColor,
+            totalPrepared: previews.length,
+            note: "Decode each base64 to disk (e.g. echo \"$b64\" | base64 -d > file.jpg) to view.",
+            images: previews.map((pv) => ({
+              filename: pv.filename,
+              full: { sizeKB: pv.full.sizeKB, base64: pv.full.base64 },
+              ...(pv.crop ? { crop: { sizeKB: pv.crop.sizeKB, base64: pv.crop.base64 } } : {}),
+            })),
+            ...(previewErrors.length ? { errors: previewErrors } : {}),
+          };
+          return { content: [{ type: "text" as const, text: JSON.stringify(summary, null, 2) }] };
+        }
+
+        const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
         content.push({
           type: "text",
           text: `Preview mode: ${previews.length} images prepared (fullWidth=${fullWidth}, closeup=${closeup}). No vision API calls were made.`,
