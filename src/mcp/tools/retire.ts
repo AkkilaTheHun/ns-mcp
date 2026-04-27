@@ -573,7 +573,11 @@ async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Recor
   report.activeProducts = products.filter(p => p.status === "ACTIVE").length;
   report.archivedProducts = products.filter(p => p.status === "ARCHIVED").length;
 
-  // 2. Group by era.
+  // 2. Group by era. An era is "active" (gets NOT_EQUALS retired filter) only if it has at least
+  // 1 product that is currently shoppable — i.e., status=ACTIVE AND not tagged retired. This
+  // handles re-runs where products have already been activated + tagged retired by an earlier
+  // phase=products call: those products are status=ACTIVE but tagged retired, so they should
+  // count as "archived bucket" for era classification purposes.
   const byEra = new Map<string, { active: string[]; archived: string[] }>();
   const productEra = new Map<string, string>();
   for (const p of products) {
@@ -585,8 +589,9 @@ async function bulkRetireBrand(args: { vendor: string; eraConsolidations?: Recor
     productEra.set(p.id, era);
     if (!byEra.has(era)) byEra.set(era, { active: [], archived: [] });
     const bucket = byEra.get(era)!;
-    if (p.status === "ACTIVE") bucket.active.push(p.id);
-    else if (p.status === "ARCHIVED") bucket.archived.push(p.id);
+    const isRetired = p.tags.includes(RETIRED_TAG);
+    if (p.status === "ACTIVE" && !isRetired) bucket.active.push(p.id);
+    else bucket.archived.push(p.id);
   }
 
   if (dryRun) {
