@@ -10,6 +10,7 @@
     "dev": "tsc --watch & node --watch dist/index.js",
     "index-brand": "tsx scripts/index-brand.ts",
     "analyze-collection": "tsx scripts/analyze-collection.ts",
+    "seo-refresh": "tsx scripts/seo-refresh.ts",
     "shopify": "shopify",
     "shopify:dev": "shopify app dev",
     "shopify:deploy": "shopify app deploy",
