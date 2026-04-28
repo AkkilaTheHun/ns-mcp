@@ -157,6 +157,9 @@ async function downloadImage(url: string): Promise<Buffer> {
 
 interface VisionResult {
   imageType: string;
+  lightingCondition?: string;
+  nailCount?: number;
+  skinTone?: string | null;
   dominantColors: Array<{ hex?: string; label: string }>;
   observedEffects: string[];
   altText: string;
@@ -353,6 +356,9 @@ async function main() {
         source_path: r.media.url,
         swatcher_handle: swatcher,
         image_type: r.analysis.imageType,
+        lighting_condition: r.analysis.lightingCondition ?? null,
+        skin_tone: r.analysis.skinTone ?? null,
+        nail_count: r.analysis.nailCount ?? null,
         dominant_colors: r.analysis.dominantColors,
         observed_effects: r.analysis.observedEffects,
         alt_text: r.analysis.altText,
@@ -386,8 +392,10 @@ async function main() {
         ok++;
         const flagged = r.analysis.confidence < 0.75 ? " ⚠ low-conf" : "";
         if (verbose) {
+          const skin = r.analysis.skinTone ? ` skin:${r.analysis.skinTone}` : "";
+          const light = r.analysis.lightingCondition ? ` light:${r.analysis.lightingCondition}` : "";
           console.log(
-            `  [${idx + 1}/${analyses.length}] ${filename} → ${r.analysis.imageType} (conf ${r.analysis.confidence.toFixed(2)})${swatcher ? ` @${swatcher}` : ""}${flagged}`,
+            `  [${idx + 1}/${analyses.length}] ${filename} → ${r.analysis.imageType} (conf ${r.analysis.confidence.toFixed(2)})${swatcher ? ` @${swatcher}` : ""}${skin}${light}${flagged}`,
           );
         }
         if (logFile) {
@@ -401,6 +409,9 @@ async function main() {
               swatcherHandle: swatcher,
               ok: true,
               imageType: r.analysis.imageType,
+              lightingCondition: r.analysis.lightingCondition,
+              skinTone: r.analysis.skinTone,
+              nailCount: r.analysis.nailCount,
               confidence: r.analysis.confidence,
               dominantColors: r.analysis.dominantColors,
               observedEffects: r.analysis.observedEffects,

@@ -140,6 +140,9 @@ Actions:
         altText: z.string().optional(),
         confidence: z.number().optional(),
         imageType: z.string().optional(),
+        lightingCondition: z.string().optional(),
+        skinTone: z.string().nullable().optional(),
+        nailCount: z.number().optional(),
       }).optional(),
 
       // add_image extras
@@ -195,6 +198,9 @@ Actions:
               source_path: p.sourcePath,
               swatcher_handle: p.swatcherHandle ?? null,
               image_type: p.analysis.imageType ?? null,
+              lighting_condition: p.analysis.lightingCondition ?? null,
+              skin_tone: p.analysis.skinTone ?? null,
+              nail_count: p.analysis.nailCount ?? null,
               dominant_colors: p.analysis.dominantColors,
               observed_effects: p.analysis.observedEffects,
               alt_text: p.analysis.altText ?? null,
