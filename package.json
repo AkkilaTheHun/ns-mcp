@@ -9,6 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch & node --watch dist/index.js",
     "index-brand": "tsx scripts/index-brand.ts",
+    "analyze-collection": "tsx scripts/analyze-collection.ts",
     "shopify": "shopify",
     "shopify:dev": "shopify app dev",
     "shopify:deploy": "shopify app deploy",
