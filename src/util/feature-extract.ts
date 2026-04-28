@@ -248,6 +248,41 @@ export function stripHtml(html: string): string {
 }
 
 /**
+ * Extract the base color label from vendor description.
+ * Looks for a color word (from COLOR_NAMES) immediately preceding the finish
+ * type or "polish" — typically "X crelly", "X jelly", "X nail polish", etc.
+ *
+ * Vendor copy for Sweet Nothing: "...is a pink crelly packed with..." → "pink"
+ * Vendor copy for Fresh Sheets: "...is a pastel mint crelly..." → "pastel mint"
+ *
+ * Returns the longest matching color word so "pastel mint" beats "mint" and
+ * "rose gold" beats "rose" or "gold".
+ */
+export function extractBaseColorLabel(rawText: string, finishType?: string): string | null {
+  const text = stripHtml(rawText).toLowerCase();
+
+  // Sort COLOR_NAMES keys longest-first so multi-word colors win
+  const colorKeys = Object.keys(COLOR_NAMES).sort((a, b) => b.length - a.length);
+  const colorPattern = colorKeys
+    .map((k) => k.replace(/[/\-\\^$*+?.()|[\]{}]/g, "\\$&"))
+    .join("|");
+
+  // Try with explicit finish type first ("pink crelly", "pastel mint crelly")
+  if (finishType) {
+    const re = new RegExp(`\\b(${colorPattern})\\s+${finishType}\\b`, "i");
+    const m = text.match(re);
+    if (m) return m[1].toLowerCase();
+  }
+
+  // Fallback: any color word followed by polish/nail polish
+  const fallback = new RegExp(`\\b(${colorPattern})\\s+(?:nail\\s+)?polish\\b`, "i");
+  const m2 = text.match(fallback);
+  if (m2) return m2[1].toLowerCase();
+
+  return null;
+}
+
+/**
  * Extract VENDOR-AUTHORITATIVE shade attributes from a product description.
  *
  * Sonnet's per-image perception can hallucinate (e.g., "multichrome" on a
@@ -260,10 +295,14 @@ export function stripHtml(html: string): string {
  * still come from per-image perception (vendor copy doesn't give pixel-
  * accurate hex codes).
  */
-export function extractFromVendorDescription(rawText: string): Pick<
+export interface VendorDescriptionAttrs extends Pick<
   FlakeAttrs,
   "finishType" | "hasUltrachrome" | "hasIridescent" | "hasHolographic" | "hasThermal" | "hasMagnetic" | "flakeSize"
 > {
+  baseColorLabel: string | null;
+}
+
+export function extractFromVendorDescription(rawText: string): VendorDescriptionAttrs {
   const text = stripHtml(rawText).toLowerCase();
 
   // Reuse the same regex bank as the per-image extractor — vendor copy and
@@ -293,6 +332,8 @@ export function extractFromVendorDescription(rawText: string): Pick<
   else if (hasUltrachrome) flakeSize = "large";
   else if (hasIridescent || hasHolographic) flakeSize = "fine";
 
+  const baseColorLabel = extractBaseColorLabel(rawText, finishType);
+
   return {
     finishType,
     hasUltrachrome,
@@ -301,6 +342,7 @@ export function extractFromVendorDescription(rawText: string): Pick<
     hasThermal,
     hasMagnetic,
     flakeSize,
+    baseColorLabel,
   };
 }
 

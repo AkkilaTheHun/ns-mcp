@@ -25,7 +25,7 @@
 import "dotenv/config";
 import { shopifyGraphQL } from "../src/shopify/client.js";
 import { getSupabase } from "../src/supabase/client.js";
-import { nearestNamedColor } from "../src/util/feature-extract.js";
+import { nearestNamedColor, extractFromVendorDescription, type VendorDescriptionAttrs } from "../src/util/feature-extract.js";
 
 // ---------------------------------------------------------------------------
 // Deterministic alt-text composer
@@ -86,10 +86,27 @@ const MAX_LENGTH = 140;
 /**
  * Compose accessibility-leaning alt text from indexed shade + image data.
  * Pattern: "{Brand} {Shade} {color descriptors} {finish} nail polish, {what's shown}, {skin tone}, {lighting}"
+ *
+ * Vendor truth (when descriptionHtml is parsable) overrides stored
+ * shade_signatures attrs that may have drifted from Sonnet perception.
+ * This means we don't need to re-index a brand to fix a "purple" base
+ * that vendor calls "pink" or a hallucinated "holographic" flag.
+ *
  * Swatcher attribution is appended only if total length stays under MAX_LENGTH.
  */
-export function composeAlt(shade: ShadeData, image: ImageData): string {
-  const baseColor = shade.base_color_hex ? nearestNamedColor(shade.base_color_hex) : "";
+export function composeAlt(shade: ShadeData, image: ImageData, vendor?: VendorDescriptionAttrs): string {
+  // Base color: prefer vendor's color word ("pink") over LAB nearest-named ("pastel purple")
+  const baseColor =
+    vendor?.baseColorLabel ??
+    (shade.base_color_hex ? nearestNamedColor(shade.base_color_hex) : "");
+
+  // Vendor truth wins on booleans + finish + flake size
+  const finishType = vendor?.finishType ?? shade.finish_type;
+  const hasUltrachrome = vendor?.hasUltrachrome !== undefined ? vendor.hasUltrachrome : shade.has_ultrachrome;
+  const hasIridescent = vendor?.hasIridescent !== undefined ? vendor.hasIridescent : shade.has_iridescent;
+  const hasHolographic = vendor?.hasHolographic !== undefined ? vendor.hasHolographic : shade.has_holographic;
+  const hasThermal = vendor?.hasThermal !== undefined ? vendor.hasThermal : shade.has_thermal;
+  const hasMagnetic = vendor?.hasMagnetic !== undefined ? vendor.hasMagnetic : shade.has_magnetic;
 
   // Flake color hint: only when shade has ultrachrome (the standout effect
   // users search for). Try each flake color in order, skipping any that
@@ -97,7 +114,7 @@ export function composeAlt(shade: ShadeData, image: ImageData): string {
   // For iridescent-only polishes, skip flake color entirely — saying "blue
   // iridescent" when base is "blue" is redundant.
   let flakeColorHint = "";
-  if (shade.has_ultrachrome && shade.flake_colors_hex && shade.flake_colors_hex.length) {
+  if (hasUltrachrome && shade.flake_colors_hex && shade.flake_colors_hex.length) {
     for (const fc of shade.flake_colors_hex) {
       const name = nearestNamedColor(fc);
       if (name === baseColor) continue;
@@ -108,13 +125,13 @@ export function composeAlt(shade: ShadeData, image: ImageData): string {
   }
 
   const effects: string[] = [];
-  if (shade.has_ultrachrome) effects.push("chameleon");
-  if (shade.has_iridescent) effects.push("iridescent");
-  if (shade.has_holographic) effects.push("holographic");
-  if (shade.has_thermal) effects.push("thermal");
-  if (shade.has_magnetic) effects.push("magnetic");
+  if (hasUltrachrome) effects.push("chameleon");
+  if (hasIridescent) effects.push("iridescent");
+  if (hasHolographic) effects.push("holographic");
+  if (hasThermal) effects.push("thermal");
+  if (hasMagnetic) effects.push("magnetic");
 
-  const descriptors = [baseColor, flakeColorHint, ...effects, shade.finish_type]
+  const descriptors = [baseColor, flakeColorHint, ...effects, finishType]
     .filter((s): s is string => Boolean(s))
     .join(" ");
 
@@ -149,6 +166,7 @@ interface ProductSummary {
   handle: string;
   vendor: string;
   collection?: string;
+  descriptionHtml?: string;
   media: ProductMedia[];
 }
 
@@ -161,6 +179,7 @@ interface ProductsQueryResult {
         title: string;
         handle: string;
         vendor: string;
+        descriptionHtml: string | null;
         media: { edges: Array<{ node: { id: string; image: { url: string; altText: string | null } | null } }> };
         metafields: { edges: Array<{ node: { namespace: string; key: string; value: string } }> };
       };
@@ -179,6 +198,7 @@ const PRODUCTS_QUERY = `
           title
           handle
           vendor
+          descriptionHtml
           media(first: 50) {
             edges {
               node {
@@ -237,6 +257,7 @@ async function listProductsForBrand(
         handle: node.handle,
         vendor: node.vendor,
         collection: collectionMeta,
+        descriptionHtml: node.descriptionHtml ?? undefined,
         media,
       });
     }
@@ -382,6 +403,14 @@ async function main() {
     const updates: Array<{ id: string; alt: string; was: string | null; url: string }> = [];
     let notIndexed = 0;
 
+    // Vendor truth from product description — overrides drift in stored attrs
+    const vendor = product.descriptionHtml
+      ? extractFromVendorDescription(product.descriptionHtml)
+      : undefined;
+    if (verbose && vendor) {
+      console.log(`  vendor truth: base=${vendor.baseColorLabel ?? "—"} finish=${vendor.finishType ?? "—"} ultrachrome=${vendor.hasUltrachrome} iridescent=${vendor.hasIridescent} holo=${vendor.hasHolographic}`);
+    }
+
     for (const m of product.media) {
       totalImages++;
       const sig = sigByUrl.get(stripQueryString(m.url));
@@ -396,7 +425,7 @@ async function main() {
         totalNotIndexed++;
         continue;
       }
-      const newAlt = composeAlt(shade, sig);
+      const newAlt = composeAlt(shade, sig, vendor);
       const currentAlt = m.altText ?? "";
       if (!force && currentAlt.trim() === newAlt.trim()) {
         totalUnchanged++;
