@@ -248,6 +248,63 @@ export function stripHtml(html: string): string {
 }
 
 /**
+ * Extract flake color labels from vendor description by scanning windows
+ * around flake-related keywords (ultrachrome, chameleon, iridescent,
+ * holographic, flakes, shimmer). Returns an ordered list of color words
+ * the vendor explicitly used to describe flakes — never invents.
+ *
+ * Pastel Thoughts vendor copy: "...purple-to-blue ultrachrome chameleon
+ * flakes and turquoise-green iridescent flakes..." → ["purple", "blue",
+ * "turquoise", "green"].
+ *
+ * Excludes base color if provided so "pastel teal crelly with purple
+ * ultrachrome..." doesn't return "teal" as a flake color.
+ */
+export function extractFlakeColorsFromDescription(
+  rawText: string,
+  baseColorLabel?: string | null,
+): string[] {
+  const lower = stripHtml(rawText).toLowerCase();
+  const colorKeys = Object.keys(COLOR_NAMES).sort((a, b) => b.length - a.length);
+  const colorPattern = colorKeys
+    .map((k) => k.replace(/[/\-\\^$*+?.()|[\]{}]/g, "\\$&"))
+    .join("|");
+
+  const flakeKeywordRe = /\b(ultrachrome|chameleon|iridescent|holographic|flakes?|shimmer|particles?|specks?)\b/g;
+  const found: string[] = [];
+  const seen = new Set<string>();
+
+  // Scan 40 chars BEFORE each flake keyword (not after — colors come before the
+  // noun in English). Text-order regex matching preserves "teal-to-purple
+  // ultrachrome" → [teal, purple] order. Longest-first alternation in the
+  // pattern means "pastel teal" still beats plain "teal" when both could match
+  // at the same position.
+  let m: RegExpExecArray | null;
+  while ((m = flakeKeywordRe.exec(lower))) {
+    const start = Math.max(0, m.index - 40);
+    const before = lower.slice(start, m.index);
+
+    const colorRe = new RegExp(`\\b(${colorPattern})\\b`, "gi");
+    let cm: RegExpExecArray | null;
+    while ((cm = colorRe.exec(before))) {
+      const c = cm[1].toLowerCase();
+      if (!seen.has(c)) {
+        seen.add(c);
+        found.push(c);
+      }
+    }
+  }
+
+  // Exclude base color and any color that overlaps with it ("teal" if base is "pastel teal")
+  if (baseColorLabel) {
+    return found.filter(
+      (c) => c !== baseColorLabel && !baseColorLabel.includes(c) && !c.includes(baseColorLabel),
+    );
+  }
+  return found;
+}
+
+/**
  * Extract the base color label from vendor description.
  * Looks for a color word (from COLOR_NAMES) immediately preceding the finish
  * type or "polish" — typically "X crelly", "X jelly", "X nail polish", etc.
@@ -300,6 +357,7 @@ export interface VendorDescriptionAttrs extends Pick<
   "finishType" | "hasUltrachrome" | "hasIridescent" | "hasHolographic" | "hasThermal" | "hasMagnetic" | "flakeSize"
 > {
   baseColorLabel: string | null;
+  flakeColors: string[];
 }
 
 export function extractFromVendorDescription(rawText: string): VendorDescriptionAttrs {
@@ -333,6 +391,7 @@ export function extractFromVendorDescription(rawText: string): VendorDescription
   else if (hasIridescent || hasHolographic) flakeSize = "fine";
 
   const baseColorLabel = extractBaseColorLabel(rawText, finishType);
+  const flakeColors = extractFlakeColorsFromDescription(rawText, baseColorLabel);
 
   return {
     finishType,
@@ -343,6 +402,7 @@ export function extractFromVendorDescription(rawText: string): VendorDescription
     hasMagnetic,
     flakeSize,
     baseColorLabel,
+    flakeColors,
   };
 }
 

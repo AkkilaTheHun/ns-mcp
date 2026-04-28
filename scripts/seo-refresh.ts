@@ -108,20 +108,17 @@ export function composeAlt(shade: ShadeData, image: ImageData, vendor?: VendorDe
   const hasThermal = vendor?.hasThermal !== undefined ? vendor.hasThermal : shade.has_thermal;
   const hasMagnetic = vendor?.hasMagnetic !== undefined ? vendor.hasMagnetic : shade.has_magnetic;
 
-  // Flake color hint: only when shade has ultrachrome (the standout effect
-  // users search for). Try each flake color in order, skipping any that
-  // overlap the base color (e.g., "purple" when base is "pastel purple").
-  // For iridescent-only polishes, skip flake color entirely — saying "blue
-  // iridescent" when base is "blue" is redundant.
+  // Flake color hint: STRICT vendor truth. Only use color words the vendor
+  // explicitly mentioned near a flake keyword in the product description.
+  // Sonnet's perception of flake colors can pick up angle-of-light artifacts
+  // (e.g. "brown" on a teal-purple ultrachrome that warm-shifts in some
+  // photos) which are NOT actual polish colors. We refuse to invent.
+  //
+  // For iridescent-only polishes, skip flake color entirely — adding
+  // "{flake color} iridescent" when there's no chameleon doesn't add value.
   let flakeColorHint = "";
-  if (hasUltrachrome && shade.flake_colors_hex && shade.flake_colors_hex.length) {
-    for (const fc of shade.flake_colors_hex) {
-      const name = nearestNamedColor(fc);
-      if (name === baseColor) continue;
-      if (baseColor.includes(name) || name.includes(baseColor)) continue;
-      flakeColorHint = name;
-      break;
-    }
+  if (hasUltrachrome && vendor?.flakeColors && vendor.flakeColors.length) {
+    flakeColorHint = vendor.flakeColors[0];
   }
 
   const effects: string[] = [];
