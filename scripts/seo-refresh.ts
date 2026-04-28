@@ -25,6 +25,117 @@
 import "dotenv/config";
 import { shopifyGraphQL } from "../src/shopify/client.js";
 import { getSupabase } from "../src/supabase/client.js";
+import { nearestNamedColor } from "../src/util/feature-extract.js";
+
+// ---------------------------------------------------------------------------
+// Deterministic alt-text composer
+// ---------------------------------------------------------------------------
+
+const NUMBER_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+function spell(n: number | null | undefined): string {
+  if (!n || n < 0) return "";
+  return NUMBER_WORDS[n] ?? String(n);
+}
+
+function imageTypeClause(type: string | null, nailCount: number | null | undefined): string {
+  const n = spell(nailCount ?? undefined);
+  const nClause = n ? `${n}-nail swatch` : "nail swatch";
+  switch (type) {
+    case "bottle_in_hand": return `bottle held with ${nClause}`;
+    case "swatch_on_nails": return n ? `swatched on ${n} nails` : "swatched on nails";
+    case "macro_detail": return "macro single-nail swatch";
+    case "bottle_standalone": return "polish bottle";
+    case "swatch_wheel": return "swatch wheel";
+    case "swatch_stick": return "swatch stick";
+    case "lifestyle": return "lifestyle shot";
+    case "group_shot": return "group shot";
+    case "layering_demo": return "layering demo";
+    default: return "";
+  }
+}
+
+function formatLighting(lc: string | null | undefined): string {
+  if (!lc) return "";
+  return lc.replace(/_/g, " ");
+}
+
+interface ShadeData {
+  brand: string;
+  shade_name: string;
+  base_color_hex: string | null;
+  finish_type: string | null;
+  has_ultrachrome: boolean;
+  has_iridescent: boolean;
+  has_holographic: boolean;
+  has_thermal: boolean;
+  has_magnetic: boolean;
+  flake_colors_hex: string[] | null;
+}
+
+interface ImageData {
+  image_type: string | null;
+  nail_count: number | null;
+  skin_tone: string | null;
+  lighting_condition: string | null;
+  swatcher_handle: string | null;
+}
+
+const MAX_LENGTH = 140;
+
+/**
+ * Compose accessibility-leaning alt text from indexed shade + image data.
+ * Pattern: "{Brand} {Shade} {color descriptors} {finish} nail polish, {what's shown}, {skin tone}, {lighting}"
+ * Swatcher attribution is appended only if total length stays under MAX_LENGTH.
+ */
+export function composeAlt(shade: ShadeData, image: ImageData): string {
+  const baseColor = shade.base_color_hex ? nearestNamedColor(shade.base_color_hex) : "";
+
+  // Flake color hint: only when shade has ultrachrome (the standout effect
+  // users search for). Try each flake color in order, skipping any that
+  // overlap the base color (e.g., "purple" when base is "pastel purple").
+  // For iridescent-only polishes, skip flake color entirely — saying "blue
+  // iridescent" when base is "blue" is redundant.
+  let flakeColorHint = "";
+  if (shade.has_ultrachrome && shade.flake_colors_hex && shade.flake_colors_hex.length) {
+    for (const fc of shade.flake_colors_hex) {
+      const name = nearestNamedColor(fc);
+      if (name === baseColor) continue;
+      if (baseColor.includes(name) || name.includes(baseColor)) continue;
+      flakeColorHint = name;
+      break;
+    }
+  }
+
+  const effects: string[] = [];
+  if (shade.has_ultrachrome) effects.push("chameleon");
+  if (shade.has_iridescent) effects.push("iridescent");
+  if (shade.has_holographic) effects.push("holographic");
+  if (shade.has_thermal) effects.push("thermal");
+  if (shade.has_magnetic) effects.push("magnetic");
+
+  const descriptors = [baseColor, flakeColorHint, ...effects, shade.finish_type]
+    .filter((s): s is string => Boolean(s))
+    .join(" ");
+
+  let alt = `${shade.brand} ${shade.shade_name} ${descriptors} nail polish`.replace(/\s+/g, " ").trim();
+
+  const imgClause = imageTypeClause(image.image_type, image.nail_count);
+  if (imgClause) alt += `, ${imgClause}`;
+
+  if (image.skin_tone) alt += `, ${image.skin_tone} skin`;
+  if (image.lighting_condition) alt += `, ${formatLighting(image.lighting_condition)} lighting`;
+
+  // Add swatcher attribution only if it fits within length budget
+  if (image.swatcher_handle) {
+    const swatcherSuffix = `, by @${image.swatcher_handle}`;
+    if (alt.length + swatcherSuffix.length <= MAX_LENGTH) {
+      alt += swatcherSuffix;
+    }
+  }
+
+  return alt;
+}
 
 interface ProductMedia {
   id: string;             // gid://shopify/MediaImage/...
@@ -141,17 +252,6 @@ function stripQueryString(url: string): string {
   return url.split("?")[0];
 }
 
-function composeRefreshedAlt(altText: string, swatcherHandle: string | null): string {
-  let composed = altText.trim();
-  if (swatcherHandle) {
-    // Avoid duplicating an existing swatcher attribution
-    if (!new RegExp(`@${swatcherHandle}`, "i").test(composed)) {
-      composed += `, swatched by @${swatcherHandle}`;
-    }
-  }
-  return composed;
-}
-
 const PRODUCT_UPDATE_MEDIA = `
   mutation ProductUpdateMedia($productId: ID!, $media: [UpdateMediaInput!]!) {
     productUpdateMedia(productId: $productId, media: $media) {
@@ -236,25 +336,39 @@ async function main() {
   console.log(`Found ${products.length} product(s) with media.\n`);
   if (!products.length) return;
 
-  // Pre-load all image_signatures for this brand to avoid N+1 queries
+  // Pre-load all shades for this brand
+  const { data: shadeRows, error: shadeErr } = await supabase
+    .from("shade_signatures")
+    .select("id, brand, shade_name, base_color_hex, finish_type, has_ultrachrome, has_iridescent, has_holographic, has_thermal, has_magnetic, flake_colors_hex")
+    .eq("brand", vendor);
+  if (shadeErr) {
+    console.error(`Supabase shade query failed: ${shadeErr.message}`);
+    process.exit(1);
+  }
+  const shadeById = new Map<number, ShadeData>();
+  for (const s of (shadeRows ?? []) as Array<ShadeData & { id: number }>) {
+    shadeById.set(s.id, s);
+  }
+
+  // Pre-load all image_signatures rows for this brand
   const { data: sigs, error: sigErr } = await supabase
     .from("image_signatures")
-    .select("source_path, alt_text, swatcher_handle, shade_id, shade_signatures!inner(brand)")
+    .select("shade_id, source_path, swatcher_handle, image_type, nail_count, skin_tone, lighting_condition, shade_signatures!inner(brand)")
     .eq("shade_signatures.brand", vendor);
   if (sigErr) {
-    console.error(`Supabase query failed: ${sigErr.message}`);
+    console.error(`Supabase image query failed: ${sigErr.message}`);
     process.exit(1);
   }
 
   // Index by stripped-query URL for fast lookup
-  type SigRow = { source_path: string; alt_text: string | null; swatcher_handle: string | null };
+  type SigRow = ImageData & { shade_id: number; source_path: string };
   const sigByUrl = new Map<string, SigRow>();
   for (const s of (sigs ?? []) as SigRow[]) {
-    if (s.source_path && s.alt_text) {
+    if (s.source_path && s.shade_id != null) {
       sigByUrl.set(stripQueryString(s.source_path), s);
     }
   }
-  console.log(`Loaded ${sigByUrl.size} indexed image signatures for ${vendor}.\n`);
+  console.log(`Loaded ${shadeById.size} shade(s) and ${sigByUrl.size} image signature(s) for ${vendor}.\n`);
 
   let totalImages = 0;
   let totalChanged = 0;
@@ -271,12 +385,18 @@ async function main() {
     for (const m of product.media) {
       totalImages++;
       const sig = sigByUrl.get(stripQueryString(m.url));
-      if (!sig || !sig.alt_text) {
+      if (!sig) {
         notIndexed++;
         totalNotIndexed++;
         continue;
       }
-      const newAlt = composeRefreshedAlt(sig.alt_text, sig.swatcher_handle);
+      const shade = shadeById.get(sig.shade_id);
+      if (!shade) {
+        notIndexed++;
+        totalNotIndexed++;
+        continue;
+      }
+      const newAlt = composeAlt(shade, sig);
       const currentAlt = m.altText ?? "";
       if (!force && currentAlt.trim() === newAlt.trim()) {
         totalUnchanged++;

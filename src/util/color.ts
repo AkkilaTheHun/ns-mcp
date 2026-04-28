@@ -44,7 +44,7 @@ export function deltaE76(a: Lab, b: Lab): number {
   return Math.sqrt(dl * dl + da * da + db * db);
 }
 
-const COLOR_NAMES: Record<string, string> = {
+export const COLOR_NAMES: Record<string, string> = {
   // Blues / cools
   "pastel blue": "#b5d3e7",
   "light blue": "#aacae8",

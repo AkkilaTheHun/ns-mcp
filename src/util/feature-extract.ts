@@ -16,7 +16,7 @@
  *   [30..49] Reserved (zeros) — room for future learned features without re-indexing
  */
 
-import { rgbToLab, hexToLab as colorHexToLab, parseColor, type Lab } from "./color.js";
+import { rgbToLab, hexToLab as colorHexToLab, parseColor, deltaE76, COLOR_NAMES, type Lab } from "./color.js";
 
 export type Vector50 = number[]; // length 50
 
@@ -198,6 +198,35 @@ export function extractFlakeAttrs(effects: string[], dominantColors: ImageAnalys
     flakeSize,
     flakeColorsHex,
   };
+}
+
+/**
+ * Find the nearest named color from COLOR_NAMES given a hex string.
+ * Uses LAB Delta-E for perceptual nearest-neighbor — sage-grey #afc9c0
+ * lands on "mint" (closest LAB), not "grey" (closer in RGB).
+ */
+export function nearestNamedColor(hex: string): string {
+  let bestName = "grey";
+  let bestDist = Infinity;
+  let target: Lab;
+  try {
+    target = colorHexToLab(hex);
+  } catch {
+    return bestName;
+  }
+  for (const [name, namedHex] of Object.entries(COLOR_NAMES)) {
+    try {
+      const lab = colorHexToLab(namedHex);
+      const d = deltaE76(target, lab);
+      if (d < bestDist) {
+        bestDist = d;
+        bestName = name;
+      }
+    } catch {
+      // skip malformed entries
+    }
+  }
+  return bestName;
 }
 
 /**
