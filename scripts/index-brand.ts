@@ -27,6 +27,7 @@
  */
 import "dotenv/config";
 import sharp from "sharp";
+import { appendFile, writeFile } from "node:fs/promises";
 import { shopifyGraphQL } from "../src/shopify/client.js";
 import { analyzeImage as analyzeImageClaude } from "../src/anthropic/vision.js";
 import { extractAndEmbed } from "../src/util/feature-extract.js";
@@ -209,35 +210,57 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
-function parseArgs(argv: string[]): { vendor: string; collection?: string; shop?: string; vendorHint?: string } {
+interface Args {
+  vendor: string;
+  collection?: string;
+  shop?: string;
+  vendorHint?: string;
+  verbose: boolean;
+  logFile?: string;
+}
+
+function parseArgs(argv: string[]): Args {
   let vendor: string | undefined;
   let collection: string | undefined;
   let shop: string | undefined;
   let vendorHint: string | undefined;
+  let verbose = false;
+  let logFile: string | undefined;
 
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--shop") shop = argv[++i];
     else if (a === "--hint") vendorHint = argv[++i];
+    else if (a === "--verbose" || a === "-v") verbose = true;
+    else if (a === "--log-file") logFile = argv[++i];
     else positional.push(a);
   }
   vendor = positional[0];
   collection = positional[1];
 
   if (!vendor) {
-    console.error("Usage: pnpm index-brand <vendor> [<collection>] [--shop <domain>] [--hint <vendorHint>]");
+    console.error(
+      "Usage: pnpm index-brand <vendor> [<collection>] [--shop <domain>] [--hint <vendorHint>] [--verbose] [--log-file <path>]",
+    );
     process.exit(1);
   }
-  return { vendor, collection, shop, vendorHint };
+  return { vendor, collection, shop, vendorHint, verbose, logFile };
 }
 
 async function main() {
-  const { vendor, collection, shop, vendorHint } = parseArgs(process.argv.slice(2));
+  const { vendor, collection, shop, vendorHint, verbose, logFile } = parseArgs(process.argv.slice(2));
   const supabase = getSupabase();
+
+  if (logFile) {
+    // Truncate the log file at the start of the run
+    await writeFile(logFile, "");
+  }
 
   console.log(`\n=== Indexing brand: ${vendor}${collection ? ` / ${collection}` : ""} ===`);
   if (shop) console.log(`Shop: ${shop}`);
+  if (verbose) console.log(`Verbose mode: per-image output enabled`);
+  if (logFile) console.log(`Log file: ${logFile}`);
   console.log(`Loading products...`);
 
   const products = await listProductsForBrand(vendor, collection, shop);
@@ -295,10 +318,28 @@ async function main() {
 
     let ok = 0;
     let bad = 0;
-    for (const r of analyses) {
+    for (let idx = 0; idx < analyses.length; idx++) {
+      const r = analyses[idx];
+      const filename = r.media.url.split("/").pop()?.split("?")[0] ?? "?";
       if (!r.ok) {
         errors.push({ product: product.title, url: r.media.url, error: r.error });
         bad++;
+        if (verbose) {
+          console.log(`  [${idx + 1}/${analyses.length}] ${filename} → ✗ ${r.error.slice(0, 80)}`);
+        }
+        if (logFile) {
+          await appendFile(
+            logFile,
+            JSON.stringify({
+              ts: new Date().toISOString(),
+              brand: product.vendor,
+              shade: product.title,
+              url: r.media.url,
+              ok: false,
+              error: r.error,
+            }) + "\n",
+          );
+        }
         continue;
       }
       const features = extractAndEmbed({
@@ -306,10 +347,11 @@ async function main() {
         observedEffects: r.analysis.observedEffects,
         altText: r.analysis.altText,
       });
+      const swatcher = extractSwatcherHandle(r.media.altText);
       const { error: insertErr } = await supabase.from("image_signatures").insert({
         shade_id: shadeId,
         source_path: r.media.url,
-        swatcher_handle: extractSwatcherHandle(r.media.altText),
+        swatcher_handle: swatcher,
         image_type: r.analysis.imageType,
         dominant_colors: r.analysis.dominantColors,
         observed_effects: r.analysis.observedEffects,
@@ -324,8 +366,50 @@ async function main() {
       if (insertErr) {
         errors.push({ product: product.title, url: r.media.url, error: insertErr.message });
         bad++;
+        if (verbose) {
+          console.log(`  [${idx + 1}/${analyses.length}] ${filename} → ✗ db: ${insertErr.message.slice(0, 80)}`);
+        }
+        if (logFile) {
+          await appendFile(
+            logFile,
+            JSON.stringify({
+              ts: new Date().toISOString(),
+              brand: product.vendor,
+              shade: product.title,
+              url: r.media.url,
+              ok: false,
+              error: `db: ${insertErr.message}`,
+            }) + "\n",
+          );
+        }
       } else {
         ok++;
+        const flagged = r.analysis.confidence < 0.75 ? " ⚠ low-conf" : "";
+        if (verbose) {
+          console.log(
+            `  [${idx + 1}/${analyses.length}] ${filename} → ${r.analysis.imageType} (conf ${r.analysis.confidence.toFixed(2)})${swatcher ? ` @${swatcher}` : ""}${flagged}`,
+          );
+        }
+        if (logFile) {
+          await appendFile(
+            logFile,
+            JSON.stringify({
+              ts: new Date().toISOString(),
+              brand: product.vendor,
+              shade: product.title,
+              url: r.media.url,
+              swatcherHandle: swatcher,
+              ok: true,
+              imageType: r.analysis.imageType,
+              confidence: r.analysis.confidence,
+              dominantColors: r.analysis.dominantColors,
+              observedEffects: r.analysis.observedEffects,
+              altText: r.analysis.altText,
+              extractedFlake: features.flake,
+              baseColorHex: features.baseColorHex,
+            }) + "\n",
+          );
+        }
       }
     }
 
