@@ -200,6 +200,81 @@ export function extractFlakeAttrs(effects: string[], dominantColors: ImageAnalys
   };
 }
 
+/**
+ * Strip HTML tags and decode common entities. Vendor descriptionHtml from
+ * Shopify comes wrapped in <p>...</p> with occasional &amp; etc.
+ */
+export function stripHtml(html: string): string {
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&[a-z]+;/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Extract VENDOR-AUTHORITATIVE shade attributes from a product description.
+ *
+ * Sonnet's per-image perception can hallucinate (e.g., "multichrome" on a
+ * photo with strong directional lighting), but the vendor's product copy
+ * is ground truth for whether a polish IS multichrome / ultrachrome /
+ * iridescent / etc. Use this to override Sonnet-derived booleans when
+ * persisting to the catalog.
+ *
+ * Returns ONLY the boolean / enum attrs — base color and flake_colors_hex
+ * still come from per-image perception (vendor copy doesn't give pixel-
+ * accurate hex codes).
+ */
+export function extractFromVendorDescription(rawText: string): Pick<
+  FlakeAttrs,
+  "finishType" | "hasUltrachrome" | "hasIridescent" | "hasHolographic" | "hasThermal" | "hasMagnetic" | "flakeSize"
+> {
+  const text = stripHtml(rawText).toLowerCase();
+
+  // Reuse the same regex bank as the per-image extractor — vendor copy and
+  // Sonnet output use the same vocabulary.
+  let finishType: FinishKey | undefined;
+  if (text.includes("crelly")) finishType = "crelly";
+  else if (text.includes("jelly")) finishType = "jelly";
+  else if (text.includes("creme") || text.includes("cream")) finishType = "creme";
+  else if (text.includes("holo")) finishType = "holo";
+  else if (text.includes("magnetic")) finishType = "magnetic";
+  else if (text.includes("multichrome")) finishType = "multichrome";
+  else if (text.includes("glitter")) finishType = "glitter";
+
+  const hasUltrachrome = /\bultrachrome|chameleon\s+(flak|shard)/i.test(text);
+  const hasIridescent = /\biridescent|pearly\s+shimmer/i.test(text);
+  const hasHolographic = /\bholo|holographic/i.test(text);
+  const hasThermal = /\bthermal|color[\- ]chang/i.test(text);
+  const hasMagnetic = /\bmagnetic/i.test(text);
+
+  // Vendor descriptions rarely use explicit "(large)" / "(small)" but the
+  // presence of ultrachrome/chameleon flakes implies large; iridescent-only
+  // implies fine.
+  let flakeSize: FlakeSizeKey = "none";
+  if (/\blarge|big|chunky|shards?\b/i.test(text)) flakeSize = "large";
+  else if (/\bmedium|moderate\b/i.test(text)) flakeSize = "medium";
+  else if (/\bfine|small|micro|tiny|pearly|scatter/i.test(text)) flakeSize = "fine";
+  else if (hasUltrachrome) flakeSize = "large";
+  else if (hasIridescent || hasHolographic) flakeSize = "fine";
+
+  return {
+    finishType,
+    hasUltrachrome,
+    hasIridescent,
+    hasHolographic,
+    hasThermal,
+    hasMagnetic,
+    flakeSize,
+  };
+}
+
 /** Extract the base color (LAB + hex) from the first dominantColors entry. */
 export function extractBaseColor(dominantColors: ImageAnalysisLike["dominantColors"]): { hex?: string; lab: Lab | null } {
   if (!dominantColors.length) return { lab: null };

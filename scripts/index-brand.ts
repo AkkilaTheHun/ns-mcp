@@ -30,9 +30,9 @@ import sharp from "sharp";
 import { appendFile, writeFile } from "node:fs/promises";
 import { shopifyGraphQL } from "../src/shopify/client.js";
 import { analyzeImage as analyzeImageClaude } from "../src/anthropic/vision.js";
-import { extractAndEmbed } from "../src/util/feature-extract.js";
+import { extractAndEmbed, extractFromVendorDescription, stripHtml } from "../src/util/feature-extract.js";
 import { getSupabase } from "../src/supabase/client.js";
-import { recomputeShadeAggregate } from "../src/supabase/recompute.js";
+import { recomputeShadeAggregate, type VendorAttrs } from "../src/supabase/recompute.js";
 
 interface ProductMedia {
   url: string;
@@ -45,6 +45,7 @@ interface ProductSummary {
   handle: string;
   vendor: string;
   collection?: string;
+  descriptionHtml?: string;
   media: ProductMedia[];
 }
 
@@ -57,6 +58,7 @@ interface ProductsQueryResult {
         title: string;
         handle: string;
         vendor: string;
+        descriptionHtml: string | null;
         media: { edges: Array<{ node: { image: { url: string; altText: string | null } | null } }> };
         metafields: { edges: Array<{ node: { namespace: string; key: string; value: string } }> };
       };
@@ -75,6 +77,7 @@ const PRODUCTS_QUERY = `
           title
           handle
           vendor
+          descriptionHtml
           media(first: 50) {
             edges {
               node {
@@ -132,6 +135,7 @@ async function listProductsForBrand(
         handle: node.handle,
         vendor: node.vendor,
         collection: collectionMeta,
+        descriptionHtml: node.descriptionHtml ?? undefined,
         media,
       });
     }
@@ -220,6 +224,7 @@ interface Args {
   vendorHint?: string;
   verbose: boolean;
   logFile?: string;
+  useDescription: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -229,6 +234,7 @@ function parseArgs(argv: string[]): Args {
   let vendorHint: string | undefined;
   let verbose = false;
   let logFile: string | undefined;
+  let useDescription = false;
 
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i++) {
@@ -237,6 +243,7 @@ function parseArgs(argv: string[]): Args {
     else if (a === "--hint") vendorHint = argv[++i];
     else if (a === "--verbose" || a === "-v") verbose = true;
     else if (a === "--log-file") logFile = argv[++i];
+    else if (a === "--use-description") useDescription = true;
     else positional.push(a);
   }
   vendor = positional[0];
@@ -244,15 +251,15 @@ function parseArgs(argv: string[]): Args {
 
   if (!vendor) {
     console.error(
-      "Usage: pnpm index-brand <vendor> [<collection>] [--shop <domain>] [--hint <vendorHint>] [--verbose] [--log-file <path>]",
+      "Usage: pnpm index-brand <vendor> [<collection>] [--shop <domain>] [--hint <vendorHint>] [--use-description] [--verbose] [--log-file <path>]",
     );
     process.exit(1);
   }
-  return { vendor, collection, shop, vendorHint, verbose, logFile };
+  return { vendor, collection, shop, vendorHint, verbose, logFile, useDescription };
 }
 
 async function main() {
-  const { vendor, collection, shop, vendorHint, verbose, logFile } = parseArgs(process.argv.slice(2));
+  const { vendor, collection, shop, vendorHint, verbose, logFile, useDescription } = parseArgs(process.argv.slice(2));
   const supabase = getSupabase();
 
   if (logFile) {
@@ -264,6 +271,7 @@ async function main() {
   if (shop) console.log(`Shop: ${shop}`);
   if (verbose) console.log(`Verbose mode: per-image output enabled`);
   if (logFile) console.log(`Log file: ${logFile}`);
+  if (useDescription) console.log(`Vendor truth mode: shade attrs derived from product descriptionHtml (not Sonnet perception)`);
   console.log(`Loading products...`);
 
   const products = await listProductsForBrand(vendor, collection, shop);
@@ -307,7 +315,23 @@ async function main() {
     }
 
     const shadeId = shadeRow.id as number;
-    const hint = vendorHint ?? "";
+
+    // vendorHint composition: explicit --hint wins; otherwise --use-description
+    // pulls from product.descriptionHtml (vendor-authoritative copy);
+    // otherwise no hint.
+    const descText = product.descriptionHtml ? stripHtml(product.descriptionHtml) : "";
+    const hint = vendorHint ?? (useDescription && descText ? descText : "");
+
+    // Vendor-truth attrs: only computed when --use-description AND we have a
+    // description. These OVERRIDE Sonnet-derived booleans in shade_signatures.
+    const vendorAttrs: VendorAttrs | undefined =
+      useDescription && descText ? extractFromVendorDescription(descText) : undefined;
+
+    if (verbose && vendorAttrs) {
+      console.log(
+        `  vendor truth: finish=${vendorAttrs.finishType ?? "—"} flake=${vendorAttrs.flakeSize ?? "—"} ultrachrome=${vendorAttrs.hasUltrachrome} iridescent=${vendorAttrs.hasIridescent} holo=${vendorAttrs.hasHolographic} thermal=${vendorAttrs.hasThermal} magnetic=${vendorAttrs.hasMagnetic}`,
+      );
+    }
 
     // Concurrent analyze (6-wide), then sequential DB inserts per shade
     const analyses = await mapConcurrent(product.media, 6, async (media, i) => {
@@ -424,9 +448,11 @@ async function main() {
       }
     }
 
-    // Single recompute at the end of this shade
+    // Single recompute at the end of this shade. When vendorAttrs is set,
+    // boolean / finish / flake_size columns are sourced from vendor copy
+    // instead of Sonnet's per-image vote.
     try {
-      await recomputeShadeAggregate(shadeId);
+      await recomputeShadeAggregate(shadeId, vendorAttrs);
     } catch (err) {
       console.log(`  ! recompute failed: ${err}`);
     }

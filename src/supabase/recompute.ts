@@ -15,7 +15,26 @@ function parseEmbedding(raw: number[] | string | null): number[] | null {
   }
 }
 
-export async function recomputeShadeAggregate(shadeId: number): Promise<void> {
+/**
+ * Vendor-supplied overrides for shade attributes. When provided, these
+ * BYPASS the per-image majority-vote aggregation for those specific fields.
+ * Use to enforce vendor-truth attrs from product description over Sonnet's
+ * possibly-hallucinatory per-image perception.
+ */
+export interface VendorAttrs {
+  finishType?: string | null;
+  hasUltrachrome?: boolean;
+  hasIridescent?: boolean;
+  hasHolographic?: boolean;
+  hasThermal?: boolean;
+  hasMagnetic?: boolean;
+  flakeSize?: string | null;
+}
+
+export async function recomputeShadeAggregate(
+  shadeId: number,
+  vendorAttrs?: VendorAttrs,
+): Promise<void> {
   const supabase = getSupabase();
 
   const { data: images, error } = await supabase
@@ -92,20 +111,29 @@ export async function recomputeShadeAggregate(shadeId: number): Promise<void> {
     .slice(0, 3)
     .map(([hex]) => hex);
 
+  // Vendor-supplied attrs take precedence over per-image vote.
+  const finalFinishType = vendorAttrs?.finishType !== undefined ? vendorAttrs.finishType : finishType;
+  const finalFlakeSize = vendorAttrs?.flakeSize !== undefined ? vendorAttrs.flakeSize : flakeSize;
+  const finalUltrachrome = vendorAttrs?.hasUltrachrome !== undefined ? vendorAttrs.hasUltrachrome : counts.ultrachrome > threshold;
+  const finalIridescent = vendorAttrs?.hasIridescent !== undefined ? vendorAttrs.hasIridescent : counts.iridescent > threshold;
+  const finalHolographic = vendorAttrs?.hasHolographic !== undefined ? vendorAttrs.hasHolographic : counts.holographic > threshold;
+  const finalThermal = vendorAttrs?.hasThermal !== undefined ? vendorAttrs.hasThermal : counts.thermal > threshold;
+  const finalMagnetic = vendorAttrs?.hasMagnetic !== undefined ? vendorAttrs.hasMagnetic : counts.magnetic > threshold;
+
   await supabase
     .from("shade_signatures")
     .update({
       base_color_lab: avgLab,
       base_color_hex: avgLab ? labToHex(avgLab) : null,
       embedding: avgEmb,
-      finish_type: finishType,
-      flake_size: flakeSize,
+      finish_type: finalFinishType,
+      flake_size: finalFlakeSize,
       flake_colors_hex: flakeColorsHex.length ? flakeColorsHex : null,
-      has_ultrachrome: counts.ultrachrome > threshold,
-      has_iridescent: counts.iridescent > threshold,
-      has_holographic: counts.holographic > threshold,
-      has_thermal: counts.thermal > threshold,
-      has_magnetic: counts.magnetic > threshold,
+      has_ultrachrome: finalUltrachrome,
+      has_iridescent: finalIridescent,
+      has_holographic: finalHolographic,
+      has_thermal: finalThermal,
+      has_magnetic: finalMagnetic,
       photo_count: images.length,
     })
     .eq("id", shadeId);
