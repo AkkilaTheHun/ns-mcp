@@ -27,9 +27,13 @@ export function registerOrderGateway(server: McpServer): void {
 - cancel: Cancel order (params: id, reason?, notifyCustomer?, refund?, restock?, staffNote?)
 - close: Close order (params: id)
 - add_tags: Add tags (params: id, tags[])
-- remove_tags: Remove tags (params: id, tags[])`,
+- remove_tags: Remove tags (params: id, tags[])
+FULFILLMENT HOLDS (operate on FulfillmentOrders, not the Order):
+- list_fulfillment_orders: List an order's fulfillment orders with their hold IDs (params: id = Order GID). Use first to obtain fulfillmentOrderId and fulfillmentHolds[].id needed below.
+- hold_fulfillment: Place a hold on one or many fulfillment orders (single: fulfillmentOrderId; bulk: fulfillmentOrders[{id}]). Shared params: holdReason (default OTHER), reasonNotes?, notifyMerchant? (default false), handle? (lets an app place multiple distinct holds on one FO). fulfillmentOrderLineItems[{id,quantity}] for a partial hold is single-order only. Bulk packs into batched aliased GraphQL — one call releases/holds hundreds.
+- release_fulfillment: Release holds on one or many fulfillment orders (single: fulfillmentOrderId + holdIds?; bulk: fulfillmentOrders[{id, holdIds?}]). IMPORTANT: pass holdIds (from list_fulfillment_orders); if omitted, Shopify releases ALL holds on that FO and may release it prematurely.`,
     {
-      action: z.enum(["list", "get", "search", "count", "update", "cancel", "close", "add_tags", "remove_tags"]),
+      action: z.enum(["list", "get", "search", "count", "update", "cancel", "close", "add_tags", "remove_tags", "list_fulfillment_orders", "hold_fulfillment", "release_fulfillment"]),
       id: z.string().optional(),
       query: z.string().optional(),
       first: z.number().optional(),
@@ -44,6 +48,14 @@ export function registerOrderGateway(server: McpServer): void {
       refund: z.boolean().optional(),
       restock: z.boolean().optional(),
       staffNote: z.string().optional(),
+      fulfillmentOrderId: z.string().optional(),
+      fulfillmentOrders: z.array(z.object({ id: z.string(), holdIds: z.array(z.string()).optional() })).optional(),
+      holdReason: z.enum(["AWAITING_PAYMENT", "AWAITING_RETURN_ITEMS", "HIGH_RISK_OF_FRAUD", "INCORRECT_ADDRESS", "INVENTORY_OUT_OF_STOCK", "ONLINE_STORE_POST_PURCHASE_CROSS_SELL", "OTHER", "UNKNOWN_DELIVERY_DATE"]).optional(),
+      reasonNotes: z.string().optional(),
+      notifyMerchant: z.boolean().optional(),
+      handle: z.string().optional(),
+      holdIds: z.array(z.string()).optional(),
+      fulfillmentOrderLineItems: z.array(z.object({ id: z.string(), quantity: z.number() })).optional(),
     },
     async ({ action, ...p }) => {
       switch (action) {
@@ -101,10 +113,84 @@ export function registerOrderGateway(server: McpServer): void {
           check(res.data?.[mutation]?.userErrors, mutation);
           return text(`${action === "add_tags" ? "Added" : "Removed"} ${p.tags.length} tag(s).`);
         }
+        case "list_fulfillment_orders": {
+          if (!p.id) return fail("id required (Order GID)");
+          const res = await gql(`query($id:ID!){order(id:$id){id name fulfillmentOrders(first:50){nodes{id status requestStatus fulfillAt fulfillmentHolds{id reason reasonNotes}lineItems(first:50){nodes{id totalQuantity remainingQuantity variant{id title sku}}}}}}}`, { id: p.id });
+          return text(res.data);
+        }
+        case "hold_fulfillment": {
+          const targets = p.fulfillmentOrders ?? (p.fulfillmentOrderId ? [{ id: p.fulfillmentOrderId }] : []);
+          if (!targets.length) return fail("fulfillmentOrderId or fulfillmentOrders[] required");
+          const holdInput: Record<string, unknown> = { reason: p.holdReason ?? "OTHER", notifyMerchant: p.notifyMerchant ?? false };
+          if (p.reasonNotes) holdInput.reasonNotes = p.reasonNotes;
+          if (p.handle) holdInput.handle = p.handle;
+          if (p.fulfillmentOrderLineItems) {
+            if (targets.length > 1) return fail("fulfillmentOrderLineItems (partial hold) is single-order only");
+            holdInput.fulfillmentOrderLineItems = p.fulfillmentOrderLineItems;
+          }
+          const data = await aliasedBulk(targets.map((t, i) => ({
+            aliasKey: `r${i}`,
+            decls: [`$id${i}:ID!`, `$hold${i}:FulfillmentOrderHoldInput!`],
+            field: `r${i}:fulfillmentOrderHold(id:$id${i},fulfillmentHold:$hold${i}){fulfillmentOrder{id status fulfillmentHolds{id reason}}userErrors{field message}}`,
+            vars: { [`id${i}`]: t.id, [`hold${i}`]: holdInput },
+          })));
+          return text(summarizeBulk(targets, data));
+        }
+        case "release_fulfillment": {
+          const targets = p.fulfillmentOrders ?? (p.fulfillmentOrderId ? [{ id: p.fulfillmentOrderId, holdIds: p.holdIds }] : []);
+          if (!targets.length) return fail("fulfillmentOrderId or fulfillmentOrders[] required");
+          const data = await aliasedBulk(targets.map((t, i) => ({
+            aliasKey: `r${i}`,
+            decls: [`$id${i}:ID!`, `$holds${i}:[ID!]`],
+            field: `r${i}:fulfillmentOrderReleaseHold(id:$id${i},holdIds:$holds${i}){fulfillmentOrder{id status}userErrors{field message}}`,
+            vars: { [`id${i}`]: t.id, [`holds${i}`]: t.holdIds ?? null },
+          })));
+          return text(summarizeBulk(targets, data));
+        }
         default: return fail(`Unknown action: ${action}`);
       }
     },
   );
+}
+
+// ---------- Bulk fulfillment-hold helpers ----------
+
+type AliasItem = { aliasKey: string; decls: string[]; field: string; vars: Record<string, unknown> };
+
+// Packs many single-FO mutations into batched aliased GraphQL requests (chunked to
+// stay under Shopify's query-cost bucket), running chunks sequentially and merging
+// the aliased response objects. A throttle/transport error on one chunk is recorded
+// against that chunk's aliases rather than aborting the whole operation.
+async function aliasedBulk(items: AliasItem[], chunkSize = 40): Promise<Record<string, { __error?: string; fulfillmentOrder?: { id: string; status: string }; userErrors?: Array<{ field?: string[]; message: string }> }>> {
+  const out: Record<string, { __error?: string; fulfillmentOrder?: { id: string; status: string }; userErrors?: Array<{ field?: string[]; message: string }> }> = {};
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const q = `mutation(${chunk.flatMap((c) => c.decls).join(",")}){${chunk.map((c) => c.field).join("\n")}}`;
+    const vars = Object.assign({}, ...chunk.map((c) => c.vars));
+    try {
+      const res = await gql<Record<string, { fulfillmentOrder?: { id: string; status: string }; userErrors?: Array<{ field?: string[]; message: string }> }>>(q, vars);
+      Object.assign(out, res.data);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      for (const c of chunk) out[c.aliasKey] = { __error: msg };
+    }
+  }
+  return out;
+}
+
+// Aggregates aliased results back to per-fulfillment-order outcomes.
+function summarizeBulk(targets: Array<{ id: string }>, data: Record<string, { __error?: string; fulfillmentOrder?: { id: string; status: string }; userErrors?: Array<{ field?: string[]; message: string }> }>) {
+  const ok: Array<{ id: string; status?: string }> = [];
+  const failed: Array<{ id: string; errors: string[] }> = [];
+  targets.forEach((t, i) => {
+    const r = data[`r${i}`];
+    const errs: string[] = [];
+    if (r?.__error) errs.push(r.__error);
+    if (r?.userErrors?.length) errs.push(...r.userErrors.map((e) => `${e.field?.join(".") ?? "?"}: ${e.message}`));
+    if (errs.length) failed.push({ id: t.id, errors: errs });
+    else ok.push({ id: t.id, status: r?.fulfillmentOrder?.status });
+  });
+  return { requested: targets.length, succeeded: ok.length, failed: failed.length, ok, errors: failed };
 }
 
 // ============================================================
