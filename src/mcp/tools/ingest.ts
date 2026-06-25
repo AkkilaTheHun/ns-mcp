@@ -285,8 +285,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       preview: z.boolean().optional().default(false).describe("Debug mode. When true, skip the vision API call entirely and return the prepared image buffers (full + crop if closeup=true) as renderable image blocks so you can inspect what would have been sent. Useful for verifying the attention crop isn't landing on a knuckle or bottle cap."),
       previewFormat: z.enum(["image", "data"]).optional().default("image").describe("Format for preview output. 'image' (default) returns inline image content blocks (rendered by Claude.ai). 'data' returns JSON with base64 strings — use this for Claude Code where inline image rendering doesn't work in most terminals; the agent can then decode to /tmp and open them with the OS image viewer."),
       cropTargetColor: z.string().optional().describe("Target color for the closeup crop. Accepts hex (e.g. '#a8c5e8') or a known name (pastel blue, pastel mint, pastel teal, pink, purple, lavender, periwinkle, grey, etc). When set, the crop is centered on the weighted centroid of pixels matching this color in LAB space — useful for swatcher folders where the catalog color is known and you want to avoid attention landing on bottle caps or skin. Falls back to attention crop if the color match is too weak."),
+      structured: z.boolean().optional().default(false).describe("When true, return the FULL structured analysis for PROGRAMMATIC callers: dominantColors as {hex,label} objects (not just label strings), plus lightingCondition, skinTone, nailCount. Default false keeps the token-light label-only output for LLM consumers. Set true when feeding the result into shade_index add_image so base_color_hex and the colour embedding get populated (parity with the CLI scripts that call analyzeImage() directly)."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview, previewFormat, cropTargetColor }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview, previewFormat, cropTargetColor, structured }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -562,11 +563,22 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
           filename: r.filename,
           subfolder: r.subfolder,
           imageType: r.analysis.imageType,
-          dominantColors: (r.analysis.dominantColors ?? []).map((c) => (typeof c === "string" ? c : c?.label ?? "")).filter(Boolean),
+          // structured=true preserves {hex,label} (+ extra fields) for programmatic
+          // callers (shade_index); default strips to label strings to save LLM tokens.
+          dominantColors: structured
+            ? (r.analysis.dominantColors ?? [])
+            : (r.analysis.dominantColors ?? []).map((c) => (typeof c === "string" ? c : c?.label ?? "")).filter(Boolean),
           observedEffects: r.analysis.observedEffects ?? [],
           altText: r.analysis.altText,
           confidence: r.analysis.confidence,
-          // Omitted to save tokens: proposedFilename, lightingCondition, nailCount, skinTone, originalSizeKB, hex colors
+          ...(structured
+            ? {
+                lightingCondition: r.analysis.lightingCondition,
+                skinTone: r.analysis.skinTone,
+                nailCount: r.analysis.nailCount,
+              }
+            : {}),
+          // Default omits (to save tokens): proposedFilename, lightingCondition, nailCount, skinTone, originalSizeKB, hex colors
         })),
         ...(skippedAfterCap > 0 ? { skippedAfterCap } : {}),
         ...(lowConfidence.length > 0 ? { lowConfidence } : {}),
