@@ -192,9 +192,18 @@ interface BlockInstance { type: string; settings?: Record<string, unknown>; disa
 interface SectionInstance { type: string; settings?: Record<string, unknown>; blocks?: Record<string, BlockInstance>; block_order?: string[]; disabled?: boolean; name?: string }
 interface TemplateJson { sections: Record<string, SectionInstance>; order: string[]; [k: string]: unknown }
 
+// Shopify theme JSON templates are JSONC — they begin with an auto-generated
+// /* ... */ banner comment. Strip leading block comments before parsing.
+export function stripJsonComments(content: string): string {
+  let s = content;
+  let prev: string;
+  do { prev = s; s = s.replace(/^﻿?\s*\/\*[\s\S]*?\*\//, ""); } while (s !== prev);
+  return s.trimStart();
+}
+
 export function parseTemplate(content: string, file: string): TemplateJson {
   let json: TemplateJson;
-  try { json = JSON.parse(content); } catch (e) { throw new Error(`${file} is not valid JSON: ${String(e)}`); }
+  try { json = JSON.parse(stripJsonComments(content)); } catch (e) { throw new Error(`${file} is not valid JSON: ${String(e)}`); }
   if (!json.sections || !Array.isArray(json.order)) {
     throw new Error(`${file} is not a section-bearing JSON file (missing "sections"/"order"). add/update/remove only work on templates/*.json and sections/*-group.json.`);
   }

@@ -1,5 +1,5 @@
 // No-network test of the theme tool's JSON-surgery + schema validation logic.
-import { extractSchema, acceptedBlocks, settingIds, parseTemplate, genId, isAppBlock } from "../src/mcp/tools/theme.js";
+import { extractSchema, acceptedBlocks, settingIds, parseTemplate, genId, isAppBlock, stripJsonComments } from "../src/mcp/tools/theme.js";
 
 let pass = 0, failn = 0;
 const ok = (name: string, cond: boolean, extra = "") => { cond ? pass++ : failn++; console.log(`${cond ? "PASS" : "FAIL"}  ${name}${extra ? "  — " + extra : ""}`); };
@@ -24,6 +24,11 @@ try { parseTemplate(`{"foo":1}`, "x.json"); } catch { guarded = true; }
 ok("parseTemplate rejects non-section JSON", guarded);
 const tpl = parseTemplate(`{"sections":{"nc1":{"type":"number-counter","blocks":{"b1":{"type":"counter","settings":{"number":"1"}}},"block_order":["b1"],"settings":{"columns":4}}},"order":["nc1"]}`, "templates/index.json");
 ok("parseTemplate accepts valid template", tpl.order[0] === "nc1");
+// JSONC: real Shopify templates lead with a /* ... */ banner comment
+const banner = `/*\n * IMPORTANT: auto-generated.\n */\n{"sections":{"s1":{"type":"x","settings":{}}},"order":["s1"]}`;
+ok("stripJsonComments removes leading banner", stripJsonComments(banner).startsWith("{"));
+ok("parseTemplate parses JSONC banner template", parseTemplate(banner, "templates/index.json").order[0] === "s1");
+ok("stripJsonComments preserves shopify:// in values", parseTemplate(`${banner.replace('"settings":{}', '"settings":{"link":"shopify://collections/x"}')}`, "t.json").sections.s1.settings!.link === "shopify://collections/x");
 
 // 3. genId / isAppBlock
 ok("genId shape <type>_<rand>", /^number_counter_[a-z0-9]{7}$/.test(genId("number-counter")));
