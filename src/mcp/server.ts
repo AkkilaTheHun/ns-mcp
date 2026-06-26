@@ -31,6 +31,7 @@ import { registerFetchVendorTool } from "./tools/fetch-vendor.js";
 import { registerRetireTool } from "./tools/retire.js";
 import { registerOrganizeImagesTool } from "./tools/organize-images.js";
 import { registerShadeIndexTool } from "./tools/shade-index.js";
+import { registerThemeGateway } from "./tools/theme.js";
 import { registerPrompts } from "./prompts.js";
 
 /**
@@ -145,6 +146,7 @@ use the shopify_* tools.`,
   registerFileGateway(server);         // list, get, create, update, delete
   registerDraftOrderGateway(server);   // list, get, create, update, complete, delete
   registerMetaobjectGateway(server);   // definitions + entries CRUD
+  registerThemeGateway(server);        // theme: list/duplicate/catalog/get_template/add_section/add_block/update_settings/remove/preview/publish
 
   // Google tools
   registerAnalyticsGateway(server);      // GA4: reports, realtime, admin (key events, dimensions, metrics, audiences)
