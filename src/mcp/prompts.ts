@@ -2,6 +2,36 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 export function registerPrompts(server: McpServer): void {
+  // --- Theme Edit ---
+  server.prompt(
+    "theme_edit",
+    "Guided, safe workflow for editing Online Store theme sections/blocks — duplicate, edit the copy, preview, then publish only on approval.",
+    {
+      goal: z.string().describe("The change you want (e.g. 'add 2 brands to the Shop by Brand section on the home page')"),
+    },
+    async ({ goal }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `I want to make this theme change: "${goal}".
+
+Use the shopify_theme tool and follow this workflow. Do not skip steps.
+
+1. **Select the shop** if more than one is connected — shopify_shop(action:"select").
+2. **Find the target.** shopify_theme(action:"catalog") shows the available sections and which block types each accepts. shopify_theme(action:"get_template", file:"templates/<page>.json") shows the live page — use it to find the exact section instance id and to see how the existing blocks/settings are shaped. Mirror that existing pattern.
+3. **Duplicate first.** shopify_theme(action:"duplicate") from the live MAIN theme. NEVER edit the live theme. Every edit below uses the duplicate's themeId.
+4. **Make the change** on the duplicate — add_section / add_block / update_settings / remove. Reuse the same setting keys the existing items use. The tool hard-fails on a block type the section doesn't accept, on max_blocks, and on unknown setting ids — if it does, re-check the catalog and correct.
+5. **Preview.** shopify_theme(action:"preview_url"); give me the link and a short summary of exactly what changed.
+6. **Ask before publishing.** Wait for me to confirm the preview looks right. Only then shopify_theme(action:"publish").
+7. If I don't want it, offer to discard the duplicate — shopify_theme(action:"delete").
+
+Always show me the preview link and get my approval before publishing anything.`,
+        },
+      }],
+    }),
+  );
+
   // --- Store Audit ---
   server.prompt(
     "store_audit",

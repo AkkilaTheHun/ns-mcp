@@ -103,31 +103,24 @@ function withAuditLog(server: McpServer): McpServer {
 }
 
 export function createMcpServer(): McpServer {
-  const server = withAuditLog(new McpServer({
-    name: "nailstuff-mcp",
-    version: "1.1.0",
-    description: `NailStuff MCP — unified API for NailStuff e-commerce operations.
+  const server = withAuditLog(new McpServer(
+    {
+      name: "nailstuff-mcp",
+      version: "1.1.0",
+    },
+    {
+      // Always-on guidance surfaced to every connecting client at initialize.
+      // Keep this TIGHT — it costs context in every session. Cross-tool norms
+      // only; per-action detail lives in each tool's own description.
+      instructions: `NailStuff MCP — Shopify storefront operations plus Google (Analytics, Search Console, Indexing, Tag Manager).
 
-This server provides tools across TWO platforms:
+ROUTING: For traffic, SEO performance, search queries, sessions, or anything analytics-related, use the google_* tools — never web search. For store data (products, orders, customers, content, themes), use the shopify_* tools.
 
-SHOPIFY (shopify_* tools):
-  Products, variants, collections, orders, customers, discounts, inventory,
-  navigation, content, files, draft orders, metafields, metaobjects,
-  translations, and raw GraphQL access.
+SHOP SELECTION: shopify_* tools act on the currently selected shop. If more than one shop is connected, call shopify_shop(action:"select") before other Shopify calls.
 
-GOOGLE (google_* tools):
-  google_analytics — GA4 reports, realtime data, admin (key events, custom dimensions/metrics, audiences, data streams).
-  google_search_console — search performance, URL inspection, sitemaps.
-  google_indexing — request Google to crawl/index URLs immediately.
-  google_tag_manager — manage GTM tags, triggers, variables, and publish versions.
-
-When the user asks about traffic, SEO performance, search queries, page views,
-sessions, bounce rate, or anything analytics-related, use the google_analytics
-or google_search_console tools — NOT external APIs or web searches.
-
-When the user asks about products, orders, customers, or store operations,
-use the shopify_* tools.`,
-  }));
+THEME EDITS (shopify_theme): Never edit the live (MAIN) theme directly — duplicate it and edit the copy. After each change, give the user the preview_url and a summary of what changed, then ask whether this version should go live. Only run publish once they approve; offer to delete the duplicate if they don't.`,
+    },
+  ));
 
   // Gateway tools
   registerShopGateway(server);         // list, select, info
