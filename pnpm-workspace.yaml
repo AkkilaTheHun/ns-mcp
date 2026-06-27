@@ -1,2 +1,7 @@
 packages:
   - "extensions/*"
+shamefullyHoist: true
+allowBuilds:
+  esbuild: true
+  protobufjs: true
+  sharp: true

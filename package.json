@@ -11,6 +11,7 @@
     "index-brand": "tsx scripts/index-brand.ts",
     "analyze-collection": "tsx scripts/analyze-collection.ts",
     "seo-refresh": "tsx scripts/seo-refresh.ts",
+    "alt-text-pipeline": "tsx scripts/alt-text-pipeline.ts",
     "shopify": "shopify",
     "shopify:dev": "shopify app dev",
     "shopify:deploy": "shopify app deploy",
@@ -28,6 +29,7 @@
     "express": "^5.2.1",
     "googleapis": "^171.4.0",
     "heic-convert": "^2.1.0",
+    "openai": "^6.45.0",
     "sharp": "^0.34.5",
     "zod": "^4.3.6"
   },
@@ -39,11 +41,5 @@
   },
   "trustedDependencies": [
     "@shopify/plugin-cloudflare"
-  ],
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "sharp",
-      "protobufjs"
-    ]
-  }
+  ]
 }

@@ -30,6 +30,7 @@ import { registerTranslateTool } from "./tools/translate.js";
 import { registerFetchVendorTool } from "./tools/fetch-vendor.js";
 import { registerRetireTool } from "./tools/retire.js";
 import { registerOrganizeImagesTool } from "./tools/organize-images.js";
+import { registerGenerateImageTool } from "./tools/generate-image.js";
 import { registerShadeIndexTool } from "./tools/shade-index.js";
 import { registerThemeGateway } from "./tools/theme.js";
 import { registerPrompts } from "./prompts.js";
@@ -166,6 +167,7 @@ THEME EDITS (shopify_theme): Never edit the live (MAIN) theme directly — dupli
 
   // Utility tools
   registerImageTools(server);            // compress_images: download, compress to JPEG, return base64
+  registerGenerateImageTool(server);     // generate_image: text-to-image via OpenAI gpt-image-2 → output/generated/
 
   // Prompts (pre-built workflows)
   registerPrompts(server);
