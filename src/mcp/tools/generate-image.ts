@@ -6,6 +6,24 @@ import { generateImages, isMockMode } from "../../openai/images.js";
 
 const OUTPUT_DIR = join(process.cwd(), "output", "generated");
 
+// Some MCP clients stringify scalars ("true", "1"). Coerce those forms so calls
+// don't fail validation, while still rejecting genuinely invalid input.
+const flexBool = (def: boolean) =>
+  z.preprocess((v) => {
+    if (typeof v === "string") {
+      const s = v.trim().toLowerCase();
+      if (s === "true") return true;
+      if (s === "false") return false;
+    }
+    return v;
+  }, z.boolean()).default(def);
+
+const flexInt = (min: number, max: number, def: number) =>
+  z.preprocess((v) => {
+    if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
+    return v;
+  }, z.number().int().min(min).max(max)).default(def);
+
 export function registerGenerateImageTool(server: McpServer): void {
   server.tool(
     "generate_image",
@@ -25,12 +43,12 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
         .describe("Output dimensions (default 1024x1024). 'auto' lets the model choose."),
       quality: z.enum(["low", "medium", "high", "auto"]).default("auto").optional()
         .describe("Render quality — higher costs more (default 'auto')"),
-      n: z.number().int().min(1).max(4).default(1).optional()
+      n: flexInt(1, 4, 1)
         .describe("How many images to generate (1-4, default 1)"),
-      preview: z.boolean().default(true).optional()
+      preview: flexBool(true)
         .describe("If true (default), also return a viewable image block; set false to return only file paths"),
-      return_base64: z.boolean().default(false).optional()
-        .describe("If true, append a JSON text block with each image's raw base64 PNG ({filename, mimeType, base64}) so the caller can decode and save the file itself. Required to retrieve images when the MCP runs remotely (Docker) and its output/generated/ path isn't reachable. Default false to keep responses small."),
+      return_base64: flexBool(false)
+        .describe("If true, append a JSON text block with each image's raw base64 PNG ({filename, mimeType, base64}) so the caller can decode and save the file itself. Required to retrieve images when the MCP runs remotely (Docker) and its output/generated/ path isn't reachable. Default false to keep responses small. Accepts true/false (boolean or string)."),
     },
     async ({ prompt, size, quality, n, preview, return_base64 }) => {
       try {
