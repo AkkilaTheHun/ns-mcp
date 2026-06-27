@@ -28,17 +28,23 @@ export function registerGenerateImageTool(server: McpServer): void {
   server.tool(
     "generate_image",
     `Generate images from a text prompt using OpenAI's gpt-image-2 model.
-Returns a viewable image block and writes each PNG to output/generated/.
+Returns a viewable image block and writes each PNG to disk.
 
-IMPORTANT — file paths are on the MACHINE RUNNING THE MCP. When this server
-runs remotely (e.g. in Docker), output/generated/ lives inside the container
-and is NOT reachable by the caller. To save the file on your side, pass
-return_base64: true and decode the base64 the tool returns.
+IMPORTANT — files are written by the MACHINE RUNNING THE MCP. When this server
+runs remotely (e.g. in Docker), the default output/generated/ path lives inside
+the container and is NOT reachable by the caller. Two ways to get the file:
+  • BEST: pass output_dir set to a path the MCP can write that you can also
+    read (e.g. a shared/mounted volume). The PNG lands there directly — no
+    base64, no size limits.
+  • Fallback: pass return_base64:true to get the bytes inline (only viable for
+    small images; a full 1024x1024 PNG can exceed token/output limits).
 
 Use for mockups, concept art, marketing visuals, or product imagery ideas.
 Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`,
     {
       prompt: z.string().min(1).describe("Text description of the image to generate"),
+      output_dir: z.string().optional()
+        .describe("Absolute directory the MCP should write the PNG(s) into, instead of the default container path. Use a path the MCP process can write AND you can read (e.g. a mounted/shared volume) to receive the file directly without base64. Created if it doesn't exist."),
       size: z.enum(["1024x1024", "1024x1536", "1536x1024", "auto"]).default("1024x1024").optional()
         .describe("Output dimensions (default 1024x1024). 'auto' lets the model choose."),
       quality: z.enum(["low", "medium", "high", "auto"]).default("auto").optional()
@@ -50,7 +56,7 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
       return_base64: flexBool(false)
         .describe("If true, append a JSON text block with each image's raw base64 PNG ({filename, mimeType, base64}) so the caller can decode and save the file itself. Required to retrieve images when the MCP runs remotely (Docker) and its output/generated/ path isn't reachable. Default false to keep responses small. Accepts true/false (boolean or string)."),
     },
-    async ({ prompt, size, quality, n, preview, return_base64 }) => {
+    async ({ prompt, size, quality, n, preview, return_base64, output_dir }) => {
       try {
         const images = await generateImages({
           prompt,
@@ -63,7 +69,15 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
           return { content: [{ type: "text" as const, text: "Error: model returned no image data" }], isError: true };
         }
 
-        await mkdir(OUTPUT_DIR, { recursive: true });
+        const targetDir = output_dir?.trim() ? output_dir.trim() : OUTPUT_DIR;
+        try {
+          await mkdir(targetDir, { recursive: true });
+        } catch (err) {
+          return {
+            content: [{ type: "text" as const, text: `Could not create output_dir "${targetDir}": ${String(err)}. Pick a path the MCP process can write (e.g. a mounted volume), or omit output_dir and use return_base64 instead.` }],
+            isError: true,
+          };
+        }
 
         const stamp = new Date().toISOString().replace(/[:.]/g, "-");
         const content: Array<
@@ -75,7 +89,7 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
         for (let i = 0; i < images.length; i++) {
           const img = images[i];
           const filename = `gpt-image-2-${stamp}-${i + 1}.png`;
-          const filepath = join(OUTPUT_DIR, filename);
+          const filepath = join(targetDir, filename);
           await writeFile(filepath, Buffer.from(img.base64, "base64"));
           paths.push(filepath);
 
@@ -91,9 +105,15 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
           content.push({ type: "text", text: JSON.stringify({ images: dataItems }, null, 2) });
         }
 
+        const wroteToCustomDir = Boolean(output_dir?.trim());
+        const locationNote = wroteToCustomDir
+          ? " (written to the output_dir you specified)"
+          : return_base64
+            ? " (base64 included below for client-side saving)"
+            : " — note: this path is on the machine running the MCP. If it's remote, pass output_dir (a shared/mounted path) or return_base64:true to retrieve the file";
         content.unshift({
           type: "text",
-          text: `${isMockMode() ? "[MOCK — no credits used] " : ""}Generated ${images.length} image(s). Saved on the MCP host at: ${paths.join(", ")}${return_base64 ? " (base64 included below for client-side saving)" : " — note: this path is on the machine running the MCP; pass return_base64:true to retrieve the bytes if the server is remote"}`,
+          text: `${isMockMode() ? "[MOCK — no credits used] " : ""}Generated ${images.length} image(s). Saved at: ${paths.join(", ")}${locationNote}`,
         });
 
         return { content };
