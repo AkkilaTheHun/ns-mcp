@@ -119,18 +119,26 @@ the container and is NOT reachable by the caller. Two ways to get the file:
   • Fallback: pass return_base64:true to get the bytes inline (only viable for
     small images; a full 1024x1024 PNG can exceed token/output limits).
 
-REFERENCE IMAGES: pass reference_urls / reference_paths / reference_images to
-generate a NEW image that matches or combines existing pictures (e.g. "a bottle
-in this exact shade", or composing several products into one scene). This routes
-to gpt-image-2's edit endpoint. Reference inputs are processed at high fidelity,
-so they add input-token cost.
+REFERENCE IMAGES — READ THIS if you want the output to match existing pictures
+(e.g. "new bottles in the same style as these product photos"):
+  ⚠️ Do NOT paste image URLs or file paths into the prompt. The model CANNOT
+     open links written in the prompt text — they are ignored, and you'll get a
+     from-scratch image that does not match.
+  ✅ Put the actual image references in the dedicated params:
+       • reference_urls   — array of HTTPS image URLs (MCP downloads them)
+       • reference_paths  — array of file paths the MCP can read
+       • reference_images — array of {data:<base64>} objects
+     The prompt should then DESCRIBE what to do ("continue this line with three
+     new shades…"), and the reference_* images supply the look to match. Any of
+     these routes the call to gpt-image-2's edit endpoint. Reference inputs are
+     processed at high fidelity, so they add input-token cost.
 
 Use for mockups, concept art, marketing visuals, or product imagery ideas.
 Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`,
     {
-      prompt: z.string().min(1).describe("Text description of the image to generate"),
+      prompt: z.string().min(1).describe("What to render, in words only. Describe the subject, style, and any instructions. Do NOT paste image URLs or file paths here — the model can't open them; to reference existing images use reference_urls/reference_paths/reference_images instead."),
       reference_urls: flexArray(z.string().url())
-        .describe("HTTPS image URLs to use as visual references (e.g. an existing product photo to match a shade). Downloaded by the MCP and sent to gpt-image-2's edit endpoint. Accepts an array, a single URL string, or a JSON array string."),
+        .describe("HTTPS image URLs to use as visual references — put existing product photos HERE (not in the prompt) when you want the output to match them. Downloaded by the MCP and sent to gpt-image-2's edit endpoint. Accepts an array, a single URL string, or a JSON array string."),
       reference_paths: flexArray(z.string())
         .describe("Image file paths the MCP process can read (e.g. on a mounted/shared volume) to use as references. Accepts an array or a single string."),
       reference_images: flexArray(z.object({
@@ -160,6 +168,12 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
     async ({ prompt, size, quality, n, preview, return_base64, output_dir, format, jpeg_quality, max_dimension, reference_urls, reference_paths, reference_images }) => {
       try {
         const refsRequested = (reference_urls?.length ?? 0) + (reference_paths?.length ?? 0) + (reference_images?.length ?? 0) > 0;
+
+        // Common mistake: pasting image URLs into the prompt instead of using
+        // reference_urls. The model can't open them, so warn if we spot it.
+        const strayPromptUrls = prompt.match(/https?:\/\/\S+?\.(?:png|jpe?g|webp|gif)(?:\?\S*)?/gi) ?? [];
+        const promptUrlWarning = !refsRequested && strayPromptUrls.length > 0;
+
         const { references, errors: refErrors } = refsRequested
           ? await loadReferences({ urls: reference_urls, paths: reference_paths, images: reference_images })
           : { references: [], errors: [] };
@@ -250,6 +264,15 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
         // Surface references that failed to load, when at least one succeeded.
         if (refErrors.length > 0 && references.length > 0) {
           content.push({ type: "text", text: `Note — ${refErrors.length} reference(s) were skipped:\n${refErrors.join("\n")}` });
+        }
+
+        // Warn if the caller pasted image URLs into the prompt but passed no
+        // reference params — those URLs were NOT used; the image is from-scratch.
+        if (promptUrlWarning) {
+          content.push({
+            type: "text",
+            text: `⚠️ This image was generated WITHOUT reference matching. Your prompt contains ${strayPromptUrls.length} image URL(s), but the model can't open URLs in the prompt — they were ignored. To match those images, re-call with reference_urls: ${JSON.stringify(strayPromptUrls)} and remove them from the prompt.`,
+          });
         }
 
         return { content };
