@@ -41,5 +41,11 @@
   },
   "trustedDependencies": [
     "@shopify/plugin-cloudflare"
-  ]
+  ],
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp",
+      "protobufjs"
+    ]
+  }
 }
