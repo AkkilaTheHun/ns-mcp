@@ -85,6 +85,25 @@ const flexInt = (min: number, max: number, def: number) =>
     return v;
   }, z.number().int().min(min).max(max)).default(def).optional();
 
+// Clients sometimes send an array param as a string — a single value, or a
+// JSON-encoded array/object. Coerce those into an array before validation.
+const coerceArray = (v: unknown) => {
+  if (typeof v !== "string") return v;
+  const s = v.trim();
+  if (s === "") return v;
+  if (s.startsWith("[") || s.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(s);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      /* not JSON — fall through to single-value wrap */
+    }
+  }
+  return [s];
+};
+const flexArray = <T extends z.ZodTypeAny>(item: T) =>
+  z.preprocess(coerceArray, z.array(item)).optional();
+
 export function registerGenerateImageTool(server: McpServer): void {
   server.tool(
     "generate_image",
@@ -110,14 +129,14 @@ Use for mockups, concept art, marketing visuals, or product imagery ideas.
 Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`,
     {
       prompt: z.string().min(1).describe("Text description of the image to generate"),
-      reference_urls: z.array(z.string().url()).optional()
-        .describe("HTTPS image URLs to use as visual references (e.g. an existing product photo to match a shade). Downloaded by the MCP and sent to gpt-image-2's edit endpoint."),
-      reference_paths: z.array(z.string()).optional()
-        .describe("Image file paths the MCP process can read (e.g. on a mounted/shared volume) to use as references."),
-      reference_images: z.array(z.object({
+      reference_urls: flexArray(z.string().url())
+        .describe("HTTPS image URLs to use as visual references (e.g. an existing product photo to match a shade). Downloaded by the MCP and sent to gpt-image-2's edit endpoint. Accepts an array, a single URL string, or a JSON array string."),
+      reference_paths: flexArray(z.string())
+        .describe("Image file paths the MCP process can read (e.g. on a mounted/shared volume) to use as references. Accepts an array or a single string."),
+      reference_images: flexArray(z.object({
         data: z.string().describe("Base64-encoded image bytes"),
         filename: z.string().optional().describe("Optional name; extension hints the format (png/jpeg/webp)"),
-      })).optional()
+      }))
         .describe("Base64 reference images. Prefer reference_urls/reference_paths — large base64 inputs can exceed tool input limits."),
       output_dir: z.string().optional()
         .describe("Absolute directory the MCP should write the PNG(s) into, instead of the default container path. Use a path the MCP process can write AND you can read (e.g. a mounted/shared volume) to receive the file directly without base64. Created if it doesn't exist."),
