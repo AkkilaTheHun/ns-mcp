@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { join, basename } from "path";
 import { mkdir, writeFile } from "fs/promises";
+import sharp from "sharp";
 import { generateImages, isMockMode } from "../../openai/images.js";
 
 const OUTPUT_DIR = join(process.cwd(), "output", "generated");
@@ -53,10 +54,16 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
         .describe("How many images to generate (1-4, default 1)"),
       preview: flexBool(true)
         .describe("If true (default), also return a viewable image block; set false to return only file paths"),
+      format: z.enum(["png", "jpeg"]).default("png").optional()
+        .describe("Output file format (default png). 'jpeg' is much smaller — use it to keep saved files light and to make return_base64 fit within output/token limits."),
+      jpeg_quality: flexInt(1, 100, 80)
+        .describe("JPEG quality 1-100 (default 80), only used when format=jpeg. Lower = smaller file."),
+      max_dimension: flexInt(64, 4096, 4096)
+        .describe("If set below the generated size, the image is downscaled so its longest side is at most this many px (preserving aspect ratio). Handy with format=jpeg to shrink base64 enough to fit output limits. Default 4096 (effectively no downscale)."),
       return_base64: flexBool(false)
-        .describe("If true, append a JSON text block with each image's raw base64 PNG ({filename, mimeType, base64}) so the caller can decode and save the file itself. Required to retrieve images when the MCP runs remotely (Docker) and its output/generated/ path isn't reachable. Default false to keep responses small. Accepts true/false (boolean or string)."),
+        .describe("If true, append a JSON text block with each image's base64 ({filename, mimeType, base64}) so the caller can decode and save the file itself. For remote MCPs prefer output_dir; if you must use base64, combine format=jpeg + a smaller max_dimension so it fits output/token limits. Accepts true/false (boolean or string)."),
     },
-    async ({ prompt, size, quality, n, preview, return_base64, output_dir }) => {
+    async ({ prompt, size, quality, n, preview, return_base64, output_dir, format, jpeg_quality, max_dimension }) => {
       try {
         const images = await generateImages({
           prompt,
@@ -86,18 +93,37 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
         const paths: string[] = [];
         const dataItems: Array<{ filename: string; mimeType: string; base64: string }> = [];
 
+        const asJpeg = format === "jpeg";
+        const ext = asJpeg ? "jpg" : "png";
+        const outMime = asJpeg ? "image/jpeg" : "image/png";
+        const maxDim = max_dimension ?? 4096;
+
         for (let i = 0; i < images.length; i++) {
           const img = images[i];
-          const filename = `gpt-image-2-${stamp}-${i + 1}.png`;
+
+          // Transcode/resize from the PNG the model returns when requested.
+          let outB64 = img.base64;
+          if (asJpeg || maxDim < 4096) {
+            let pipeline = sharp(Buffer.from(img.base64, "base64"));
+            if (maxDim < 4096) {
+              pipeline = pipeline.resize({ width: maxDim, height: maxDim, fit: "inside", withoutEnlargement: true });
+            }
+            if (asJpeg) {
+              pipeline = pipeline.jpeg({ quality: jpeg_quality ?? 80, mozjpeg: true });
+            }
+            outB64 = (await pipeline.toBuffer()).toString("base64");
+          }
+
+          const filename = `gpt-image-2-${stamp}-${i + 1}.${ext}`;
           const filepath = join(targetDir, filename);
-          await writeFile(filepath, Buffer.from(img.base64, "base64"));
+          await writeFile(filepath, Buffer.from(outB64, "base64"));
           paths.push(filepath);
 
           if (preview !== false) {
-            content.push({ type: "image", data: img.base64, mimeType: img.mimeType });
+            content.push({ type: "image", data: outB64, mimeType: outMime });
           }
           if (return_base64) {
-            dataItems.push({ filename: basename(filepath), mimeType: img.mimeType, base64: img.base64 });
+            dataItems.push({ filename: basename(filepath), mimeType: outMime, base64: outB64 });
           }
         }
 
