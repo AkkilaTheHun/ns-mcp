@@ -1,4 +1,4 @@
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import sharp from "sharp";
 
 let cachedClient: OpenAI | undefined;
@@ -54,6 +54,15 @@ async function mockImage(prompt: string, size: string, index: number): Promise<G
   return { base64: buf.toString("base64"), mimeType: "image/png" };
 }
 
+// gpt-image-* always return base64 (b64_json) PNGs — no URL option.
+function decodeResult(res: { data?: Array<{ b64_json?: string | null }> | null }): GeneratedImage[] {
+  const data = res.data ?? [];
+  return data
+    .map((d): string | undefined => d.b64_json ?? undefined)
+    .filter((b): b is string => Boolean(b))
+    .map((b64): GeneratedImage => ({ base64: b64, mimeType: "image/png" }));
+}
+
 export async function generateImages(opts: GenerateImageOptions): Promise<GeneratedImage[]> {
   const size = opts.size ?? "1024x1024";
   const count = opts.n ?? 1;
@@ -68,14 +77,53 @@ export async function generateImages(opts: GenerateImageOptions): Promise<Genera
   const res = await client.images.generate({
     model: opts.model ?? "gpt-image-2",
     prompt: opts.prompt,
-    n: opts.n ?? 1,
+    n: count,
     ...(opts.size ? { size: opts.size as never } : {}),
     ...(opts.quality ? { quality: opts.quality as never } : {}),
   });
 
-  const data = res.data ?? [];
-  return data
-    .map((d): string | undefined => d.b64_json)
-    .filter((b): b is string => Boolean(b))
-    .map((b64): GeneratedImage => ({ base64: b64, mimeType: "image/png" }));
+  return decodeResult(res);
+}
+
+export interface ReferenceImage {
+  data: Buffer;        // raw image bytes
+  filename: string;    // e.g. "sample.png" — extension hints the format
+  mimeType: string;    // e.g. "image/png", "image/jpeg"
+}
+
+export interface EditImageOptions extends GenerateImageOptions {
+  references: ReferenceImage[];   // one or more reference images to match/combine
+}
+
+/**
+ * Generate a new image that references one or more existing images, via the
+ * gpt-image-2 edits endpoint (e.g. "make a polish bottle matching this photo").
+ */
+export async function editImages(opts: EditImageOptions): Promise<GeneratedImage[]> {
+  const size = opts.size ?? "1024x1024";
+  const count = opts.n ?? 1;
+
+  if (isMockMode()) {
+    return Promise.all(
+      Array.from({ length: count }, (_, i) =>
+        mockImage(`${opts.prompt} [edit · ${opts.references.length} ref]`, size, i),
+      ),
+    );
+  }
+
+  const client = getClient();
+  const image = await Promise.all(
+    opts.references.map((r) => toFile(r.data, r.filename, { type: r.mimeType })),
+  );
+
+  const res = await client.images.edit({
+    model: opts.model ?? "gpt-image-2",
+    image,
+    prompt: opts.prompt,
+    n: count,
+    ...(opts.size ? { size: opts.size as never } : {}),
+    ...(opts.quality ? { quality: opts.quality as never } : {}),
+  });
+
+  return decodeResult(res);
 }

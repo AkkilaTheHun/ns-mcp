@@ -1,11 +1,71 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { join, basename } from "path";
-import { mkdir, writeFile } from "fs/promises";
+import { join, basename, extname } from "path";
+import { mkdir, writeFile, readFile } from "fs/promises";
 import sharp from "sharp";
-import { generateImages, isMockMode } from "../../openai/images.js";
+import { generateImages, editImages, isMockMode, type ReferenceImage } from "../../openai/images.js";
 
 const OUTPUT_DIR = join(process.cwd(), "output", "generated");
+
+const MIME_BY_EXT: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+const mimeFromName = (name: string) => MIME_BY_EXT[extname(name).toLowerCase()] ?? "image/png";
+
+// Load reference images from any mix of URLs, local paths, or base64.
+async function loadReferences(input: {
+  urls?: string[];
+  paths?: string[];
+  images?: Array<{ data: string; filename?: string }>;
+}): Promise<{ references: ReferenceImage[]; errors: string[] }> {
+  const references: ReferenceImage[] = [];
+  const errors: string[] = [];
+  let idx = 0;
+
+  for (const url of input.urls ?? []) {
+    idx++;
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      const ct = (res.headers.get("content-type") ?? "").split(";")[0].trim();
+      if (ct.includes("text/html")) throw new Error("got HTML, not an image — needs a direct image URL");
+      const data = Buffer.from(await res.arrayBuffer());
+      const filename = basename(new URL(url).pathname) || `ref-${idx}.png`;
+      references.push({ data, filename, mimeType: ct || mimeFromName(filename) });
+    } catch (e) {
+      errors.push(`url ${url}: ${String(e)}`);
+    }
+  }
+
+  for (const p of input.paths ?? []) {
+    idx++;
+    try {
+      const data = await readFile(p);
+      const filename = basename(p) || `ref-${idx}.png`;
+      references.push({ data, filename, mimeType: mimeFromName(filename) });
+    } catch (e) {
+      errors.push(`path ${p}: ${String(e)}`);
+    }
+  }
+
+  for (const im of input.images ?? []) {
+    idx++;
+    try {
+      const data = Buffer.from(im.data, "base64");
+      if (!data.length) throw new Error("empty or invalid base64");
+      const filename = im.filename || `ref-${idx}.png`;
+      references.push({ data, filename, mimeType: mimeFromName(filename) });
+    } catch (e) {
+      errors.push(`image ${im.filename ?? idx}: ${String(e)}`);
+    }
+  }
+
+  return { references, errors };
+}
 
 // Some MCP clients stringify scalars ("true", "1"). Coerce those forms so calls
 // don't fail validation, while still rejecting genuinely invalid input.
@@ -40,10 +100,25 @@ the container and is NOT reachable by the caller. Two ways to get the file:
   • Fallback: pass return_base64:true to get the bytes inline (only viable for
     small images; a full 1024x1024 PNG can exceed token/output limits).
 
+REFERENCE IMAGES: pass reference_urls / reference_paths / reference_images to
+generate a NEW image that matches or combines existing pictures (e.g. "a bottle
+in this exact shade", or composing several products into one scene). This routes
+to gpt-image-2's edit endpoint. Reference inputs are processed at high fidelity,
+so they add input-token cost.
+
 Use for mockups, concept art, marketing visuals, or product imagery ideas.
 Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`,
     {
       prompt: z.string().min(1).describe("Text description of the image to generate"),
+      reference_urls: z.array(z.string().url()).optional()
+        .describe("HTTPS image URLs to use as visual references (e.g. an existing product photo to match a shade). Downloaded by the MCP and sent to gpt-image-2's edit endpoint."),
+      reference_paths: z.array(z.string()).optional()
+        .describe("Image file paths the MCP process can read (e.g. on a mounted/shared volume) to use as references."),
+      reference_images: z.array(z.object({
+        data: z.string().describe("Base64-encoded image bytes"),
+        filename: z.string().optional().describe("Optional name; extension hints the format (png/jpeg/webp)"),
+      })).optional()
+        .describe("Base64 reference images. Prefer reference_urls/reference_paths — large base64 inputs can exceed tool input limits."),
       output_dir: z.string().optional()
         .describe("Absolute directory the MCP should write the PNG(s) into, instead of the default container path. Use a path the MCP process can write AND you can read (e.g. a mounted/shared volume) to receive the file directly without base64. Created if it doesn't exist."),
       size: z.enum(["1024x1024", "1024x1536", "1536x1024", "auto"]).default("1024x1024").optional()
@@ -63,14 +138,24 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
       return_base64: flexBool(false)
         .describe("If true, append a JSON text block with each image's base64 ({filename, mimeType, base64}) so the caller can decode and save the file itself. For remote MCPs prefer output_dir; if you must use base64, combine format=jpeg + a smaller max_dimension so it fits output/token limits. Accepts true/false (boolean or string)."),
     },
-    async ({ prompt, size, quality, n, preview, return_base64, output_dir, format, jpeg_quality, max_dimension }) => {
+    async ({ prompt, size, quality, n, preview, return_base64, output_dir, format, jpeg_quality, max_dimension, reference_urls, reference_paths, reference_images }) => {
       try {
-        const images = await generateImages({
-          prompt,
-          size: size ?? "1024x1024",
-          quality: quality ?? "auto",
-          n: n ?? 1,
-        });
+        const refsRequested = (reference_urls?.length ?? 0) + (reference_paths?.length ?? 0) + (reference_images?.length ?? 0) > 0;
+        const { references, errors: refErrors } = refsRequested
+          ? await loadReferences({ urls: reference_urls, paths: reference_paths, images: reference_images })
+          : { references: [], errors: [] };
+
+        if (refsRequested && references.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: `Could not load any reference image(s):\n${refErrors.join("\n")}` }],
+            isError: true,
+          };
+        }
+
+        const genOpts = { prompt, size: size ?? "1024x1024", quality: quality ?? "auto", n: n ?? 1 };
+        const images = references.length > 0
+          ? await editImages({ ...genOpts, references })
+          : await generateImages(genOpts);
 
         if (!images.length) {
           return { content: [{ type: "text" as const, text: "Error: model returned no image data" }], isError: true };
@@ -137,10 +222,16 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
           : return_base64
             ? " (base64 included below for client-side saving)"
             : " — note: this path is on the machine running the MCP. If it's remote, pass output_dir (a shared/mounted path) or return_base64:true to retrieve the file";
+        const refNote = references.length > 0 ? ` Matched ${references.length} reference image(s).` : "";
         content.unshift({
           type: "text",
-          text: `${isMockMode() ? "[MOCK — no credits used] " : ""}Generated ${images.length} image(s). Saved at: ${paths.join(", ")}${locationNote}`,
+          text: `${isMockMode() ? "[MOCK — no credits used] " : ""}Generated ${images.length} image(s).${refNote} Saved at: ${paths.join(", ")}${locationNote}`,
         });
+
+        // Surface references that failed to load, when at least one succeeded.
+        if (refErrors.length > 0 && references.length > 0) {
+          content.push({ type: "text", text: `Note — ${refErrors.length} reference(s) were skipped:\n${refErrors.join("\n")}` });
+        }
 
         return { content };
       } catch (err) {
