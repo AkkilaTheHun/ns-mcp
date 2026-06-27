@@ -17,13 +17,13 @@ const flexBool = (def: boolean) =>
       if (s === "false") return false;
     }
     return v;
-  }, z.boolean()).default(def);
+  }, z.boolean()).default(def).optional();
 
 const flexInt = (min: number, max: number, def: number) =>
   z.preprocess((v) => {
     if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) return Number(v);
     return v;
-  }, z.number().int().min(min).max(max)).default(def);
+  }, z.number().int().min(min).max(max)).default(def).optional();
 
 export function registerGenerateImageTool(server: McpServer): void {
   server.tool(
