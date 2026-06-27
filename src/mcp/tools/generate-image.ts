@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { join } from "path";
+import { join, basename } from "path";
 import { mkdir, writeFile } from "fs/promises";
 import { generateImages, isMockMode } from "../../openai/images.js";
 
@@ -10,8 +10,12 @@ export function registerGenerateImageTool(server: McpServer): void {
   server.tool(
     "generate_image",
     `Generate images from a text prompt using OpenAI's gpt-image-2 model.
-Writes each PNG to output/generated/ and returns the file path(s) plus a
-viewable image block.
+Returns a viewable image block and writes each PNG to output/generated/.
+
+IMPORTANT — file paths are on the MACHINE RUNNING THE MCP. When this server
+runs remotely (e.g. in Docker), output/generated/ lives inside the container
+and is NOT reachable by the caller. To save the file on your side, pass
+return_base64: true and decode the base64 the tool returns.
 
 Use for mockups, concept art, marketing visuals, or product imagery ideas.
 Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`,
@@ -25,8 +29,10 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
         .describe("How many images to generate (1-4, default 1)"),
       preview: z.boolean().default(true).optional()
         .describe("If true (default), also return a viewable image block; set false to return only file paths"),
+      return_base64: z.boolean().default(false).optional()
+        .describe("If true, append a JSON text block with each image's raw base64 PNG ({filename, mimeType, base64}) so the caller can decode and save the file itself. Required to retrieve images when the MCP runs remotely (Docker) and its output/generated/ path isn't reachable. Default false to keep responses small."),
     },
-    async ({ prompt, size, quality, n, preview }) => {
+    async ({ prompt, size, quality, n, preview, return_base64 }) => {
       try {
         const images = await generateImages({
           prompt,
@@ -46,6 +52,7 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
           { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
         > = [];
         const paths: string[] = [];
+        const dataItems: Array<{ filename: string; mimeType: string; base64: string }> = [];
 
         for (let i = 0; i < images.length; i++) {
           const img = images[i];
@@ -57,11 +64,18 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
           if (preview !== false) {
             content.push({ type: "image", data: img.base64, mimeType: img.mimeType });
           }
+          if (return_base64) {
+            dataItems.push({ filename: basename(filepath), mimeType: img.mimeType, base64: img.base64 });
+          }
+        }
+
+        if (return_base64) {
+          content.push({ type: "text", text: JSON.stringify({ images: dataItems }, null, 2) });
         }
 
         content.unshift({
           type: "text",
-          text: `${isMockMode() ? "[MOCK — no credits used] " : ""}Generated ${images.length} image(s) → ${paths.join(", ")}`,
+          text: `${isMockMode() ? "[MOCK — no credits used] " : ""}Generated ${images.length} image(s). Saved on the MCP host at: ${paths.join(", ")}${return_base64 ? " (base64 included below for client-side saving)" : " — note: this path is on the machine running the MCP; pass return_base64:true to retrieve the bytes if the server is remote"}`,
         });
 
         return { content };
