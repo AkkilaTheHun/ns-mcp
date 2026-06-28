@@ -165,7 +165,25 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
       return_base64: flexBool(false)
         .describe("If true, append a JSON text block with each image's base64 ({filename, mimeType, base64}) so the caller can decode and save the file itself. For remote MCPs prefer output_dir; if you must use base64, combine format=jpeg + a smaller max_dimension so it fits output/token limits. Accepts true/false (boolean or string)."),
     },
-    async ({ prompt, size, quality, n, preview, return_base64, output_dir, format, jpeg_quality, max_dimension, reference_urls, reference_paths, reference_images }) => {
+    async ({ prompt, size, quality, n, preview, return_base64, output_dir, format, jpeg_quality, max_dimension, reference_urls, reference_paths, reference_images }, extra) => {
+      // gpt-image-2 can take 1-2+ minutes (esp. quality=high or reference edits).
+      // Emit periodic progress notifications so the client resets its request
+      // timeout and the stream stays alive through any proxy. No-op if the
+      // client didn't request progress (no progressToken).
+      const progressToken = (extra as { _meta?: { progressToken?: string | number } })?._meta?.progressToken;
+      const sendNote = (extra as { sendNotification?: (n: unknown) => Promise<void> })?.sendNotification;
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      if (progressToken !== undefined && sendNote) {
+        let ticks = 0;
+        heartbeat = setInterval(() => {
+          ticks += 1;
+          void sendNote({
+            method: "notifications/progress",
+            params: { progressToken, progress: ticks, message: `Rendering image… (${ticks * 10}s elapsed)` },
+          }).catch(() => {});
+        }, 10000);
+      }
+
       try {
         const refsRequested = (reference_urls?.length ?? 0) + (reference_paths?.length ?? 0) + (reference_images?.length ?? 0) > 0;
 
@@ -281,6 +299,8 @@ Note: gpt-image-2 always returns PNG; size/quality control resolution and cost.`
           content: [{ type: "text" as const, text: `Image generation failed: ${String(err)}` }],
           isError: true,
         };
+      } finally {
+        if (heartbeat) clearInterval(heartbeat);
       }
     },
   );
