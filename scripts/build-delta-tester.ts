@@ -131,6 +131,7 @@ const html = `<!doctype html>
 <div class="wrap">
   <div class="col picker">
     <div class="hexbox">
+      <input id="picker" type="color" value="#5a8fc4" title="Pick any color" style="width:44px;height:38px;padding:2px;background:var(--panel);border:1px solid var(--line);border-radius:8px;cursor:pointer">
       <input id="hex" type="text" placeholder="#a8c5e8 or 'teal'" style="flex:1" autocomplete="off">
       <button id="hexgo" style="padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--txt);cursor:pointer">Match</button>
     </div>
@@ -206,6 +207,8 @@ function runHex(){
 }
 document.getElementById('hexgo').addEventListener('click', runHex);
 document.getElementById('hex').addEventListener('keydown', e=>{ if(e.key==='Enter') runHex(); });
+// Native color picker — live-updates matches as you drag the spectrum.
+document.getElementById('picker').addEventListener('input', e=>{ document.getElementById('hex').value=e.target.value; runHex(); });
 
 function finTxt(s){ const t=[s.finish]; if(s.holo)t.push('holo'); if(s.uc)t.push('ultrachrome'); if(s.irid)t.push('iridescent'); return t.filter(Boolean).join(' · ')||'—'; }
 
