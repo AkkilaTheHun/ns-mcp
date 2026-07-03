@@ -138,7 +138,9 @@ function entryToHexAndLab(entry: { hex?: string; label: string } | string): { he
 
 /** Parse observedEffects strings into structured flake attributes. */
 export function extractFlakeAttrs(effects: string[], dominantColors: ImageAnalysisLike["dominantColors"]): FlakeAttrs {
-  const joined = effects.join(" ").toLowerCase();
+  const safeEffects = effects ?? [];
+  const safeDominant = dominantColors ?? [];
+  const joined = safeEffects.join(" ").toLowerCase();
 
   // Finish type — pick the first match in priority order.
   let finishType: FinishKey | undefined;
@@ -153,7 +155,13 @@ export function extractFlakeAttrs(effects: string[], dominantColors: ImageAnalys
   const hasUltrachrome = /\bultrachrome|chameleon\s+(flak|shard)/i.test(joined);
   const hasIridescent = /\biridescent|pearly\s+shimmer/i.test(joined);
   const hasHolographic = /\bholo|holographic/i.test(joined);
-  const hasThermal = /\bthermal|color[\- ]chang/i.test(joined);
+  // True thermal triggers only on explicit "thermal" or generic color-changing
+  // language when there's NO uv/photochromic context. Vision sometimes writes
+  // "thermal/photochromic" for UV-reactive polishes — those are not thermal.
+  const hasUVReactive = /\b(uv[\- ]reactive|uv[\- ]activated|photochromic)\b/i.test(joined);
+  const thermalKeyword = /\bthermal\b/i.test(joined);
+  const colorChanging = /color[\- ]chang/i.test(joined);
+  const hasThermal = (thermalKeyword || colorChanging) && !hasUVReactive;
   const hasMagnetic = /\bmagnetic/i.test(joined);
 
   // Flake size: look for explicit size descriptors. Default to fine if any flakes detected.
@@ -170,8 +178,8 @@ export function extractFlakeAttrs(effects: string[], dominantColors: ImageAnalys
   // gold). Cap at 3 unique flake colors total.
   const flakeColorsHex: string[] = [];
   const seenHex = new Set<string>();
-  for (let i = 1; i < dominantColors.length && flakeColorsHex.length < 3; i++) {
-    const entry = dominantColors[i];
+  for (let i = 1; i < safeDominant.length && flakeColorsHex.length < 3; i++) {
+    const entry = safeDominant[i];
     if (typeof entry === "object" && entry.hex && !seenHex.has(entry.hex)) {
       flakeColorsHex.push(entry.hex);
       seenHex.add(entry.hex);
@@ -408,7 +416,7 @@ export function extractFromVendorDescription(rawText: string): VendorDescription
 
 /** Extract the base color (LAB + hex) from the first dominantColors entry. */
 export function extractBaseColor(dominantColors: ImageAnalysisLike["dominantColors"]): { hex?: string; lab: Lab | null } {
-  if (!dominantColors.length) return { lab: null };
+  if (!dominantColors || !dominantColors.length) return { lab: null };
   return entryToHexAndLab(dominantColors[0]);
 }
 

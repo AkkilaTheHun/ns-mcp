@@ -19,6 +19,7 @@ import {
   extractAndEmbed,
   type ImageAnalysisLike,
 } from "../../util/feature-extract.js";
+import { deltaE76, parseColor, type Lab } from "../../util/color.js";
 
 interface ShadeRow {
   id: number;
@@ -113,9 +114,21 @@ Actions:
   ImageAnalysis output (dominantColors, observedEffects, altText, confidence).
   Creates the shade row on first sight, inserts an image_signatures row, and
   recomputes the shade aggregate. Optionally include shopify product info.
-- identify: Given an analysis (or pre-built embedding), return the top-K nearest
-  shades. Use this when a user submits a photo of nails or a bottle and you want
-  to suggest possible matches. Returns each candidate with similarity score.
+- identify: Find catalog shades. Pick params by scenario:
+    * "Which polish is this?" (identify from a photo) →
+        mode:"signature" (default), analysis:<analyze_images output>.
+        Ranks by the full 50-dim vector (hue + finish + flake character).
+    * "Closest shades to a color" (top matches, ordered) →
+        mode:"color", and EITHER color:"#a8c5e8" / color:"teal" OR
+        analysis:<...>. Ranks by hue-only perceptual LAB ΔE; finish/flake are
+        ignored. topK caps the count (default 5).
+    * "All shades in a color family" (everything of that color) →
+        mode:"color" + color/analysis + maxDeltaE:<radius>. Returns EVERY shade
+        within that ΔE of the query, not just the closest K. Guide: ~5 near-
+        identical, ~10 same color, ~20 broad family.
+  You never compute LAB — the server converts hex/name/analysis to LAB. A color
+  NAME anchors to one canonical swatch (e.g. "blue" = #5a8fc4), so for a precise
+  target prefer a hex or an analysis over a bare name.
 - list_shades: Browse catalog. Filter by brand. Paginated.
 - get_shade: Full record + image_signatures count for one shade.
 - recompute_shade: Force aggregate recomputation for one shade.
@@ -152,8 +165,15 @@ Actions:
       visionModel: z.string().optional(),
 
       // identify extras
-      topK: z.number().optional().default(5),
+      topK: z.number().optional()
+        .describe("Cap on results. Defaults to 5 for nearest-K queries; 200 when maxDeltaE (family) is set."),
       brandFilter: z.string().optional().describe("Limit identify results to this brand"),
+      mode: z.enum(["signature", "color"]).optional().default("signature")
+        .describe("identify ranking: 'signature' = full shade vector (default); 'color' = hue-only LAB ΔE"),
+      color: z.string().optional()
+        .describe("mode:'color' query — a hex like '#a8c5e8' or a color name like 'teal'. Server converts to LAB."),
+      maxDeltaE: z.number().optional()
+        .describe("mode:'color' family radius. When set, returns ALL shades within this LAB ΔE of the query (not just the closest K). Guide: ~5 near-identical, ~10 same color, ~20 broad family."),
 
       // list_shades
       limit: z.number().optional().default(50),
@@ -228,11 +248,87 @@ Actions:
 
           // ---------------------------------------------------------------
           case "identify": {
+            const topK = p.topK ?? 5;
+            const isFamilyQuery = p.mode === "color" && p.maxDeltaE != null;
+
+            // -----------------------------------------------------------
+            // mode:"color" — rank by perceptual hue distance (LAB ΔE) on the
+            // base color only. Finish and flake attrs are deliberately ignored
+            // so results are pure color matches, not diluted by the composite
+            // vector's finish/flake one-hots.
+            // -----------------------------------------------------------
+            if (p.mode === "color") {
+              let queryLab: Lab;
+              if (p.color) {
+                try {
+                  queryLab = parseColor(p.color);
+                } catch (e) {
+                  return fail(`mode:'color' — ${e instanceof Error ? e.message : String(e)}`);
+                }
+              } else if (p.analysis) {
+                const lab = extractAndEmbed(p.analysis as ImageAnalysisLike).baseColorLab;
+                if (!lab) return fail("mode:'color' — could not derive a base color from analysis.dominantColors; pass `color` (hex or name) instead");
+                queryLab = lab;
+              } else {
+                return fail("mode:'color' requires either `color` (hex or color name) or `analysis`");
+              }
+
+              let cq = supabase
+                .from("shade_signatures")
+                .select("id, brand, shade_name, collection, base_color_hex, base_color_lab, finish_type, has_ultrachrome, has_iridescent, has_holographic, has_thermal, has_magnetic, flake_size, photo_count")
+                .not("base_color_lab", "is", null);
+              if (p.brandFilter) cq = cq.eq("brand", p.brandFilter);
+
+              const { data: cShades, error: cErr } = await cq;
+              if (cErr) return fail(`Identify (color) query failed: ${cErr.message}`);
+              if (!cShades || !cShades.length) return ok({ matches: [], note: "No shades with a base color indexed yet" });
+
+              const cScored = cShades
+                .map((s) => {
+                  const lab = s.base_color_lab as number[] | null;
+                  if (!Array.isArray(lab) || lab.length !== 3) return null;
+                  const deltaE = deltaE76(queryLab, lab as Lab);
+                  return {
+                    shadeId: s.id,
+                    brand: s.brand,
+                    shadeName: s.shade_name,
+                    collection: s.collection,
+                    baseColorHex: s.base_color_hex,
+                    finishType: s.finish_type,
+                    attrs: {
+                      ultrachrome: s.has_ultrachrome,
+                      iridescent: s.has_iridescent,
+                      holographic: s.has_holographic,
+                      thermal: s.has_thermal,
+                      magnetic: s.has_magnetic,
+                    },
+                    flakeSize: s.flake_size,
+                    photoCount: s.photo_count,
+                    deltaE: Math.round(deltaE * 100) / 100,
+                  };
+                })
+                .filter((r): r is NonNullable<typeof r> => r !== null)
+                .sort((a, b) => a.deltaE - b.deltaE);
+
+              // Family query (maxDeltaE set): all shades within the radius,
+              // capped high for safety. Otherwise: the closest K.
+              const cMatches = isFamilyQuery
+                ? cScored.filter((r) => r.deltaE <= p.maxDeltaE!).slice(0, p.topK ?? 200)
+                : cScored.slice(0, topK);
+
+              return ok({
+                mode: "color",
+                query: { color: p.color ?? null, queryLab, maxDeltaE: p.maxDeltaE ?? null },
+                matchCount: cMatches.length,
+                totalWithinCatalog: cScored.length,
+                matches: cMatches,
+              });
+            }
+
             if (!p.analysis) {
               return fail("identify requires analysis (the analyze_images output for the user photo)");
             }
             const features = extractAndEmbed(p.analysis as ImageAnalysisLike);
-            const topK = p.topK ?? 5;
 
             // For POC scale (hundreds of shades) we fetch all candidate rows and
             // rank in-process. Once the catalog grows past a few thousand shades,
