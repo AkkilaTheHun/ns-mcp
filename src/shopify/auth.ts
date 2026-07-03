@@ -39,6 +39,7 @@ export function handleAuthBegin(req: Request, res: Response): void {
     "read_assigned_fulfillment_orders",
     "read_merchant_managed_fulfillment_orders", "write_merchant_managed_fulfillment_orders",
     "read_third_party_fulfillment_orders", "write_third_party_fulfillment_orders",
+    "write_order_edits", "read_returns", "read_reports",
   ].join(",");
 
   const redirectUri = `${config.hostUrl}/auth/callback`;
