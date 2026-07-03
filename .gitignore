@@ -31,3 +31,5 @@ extensions/*/dist
 # Ignore shopify files created during app dev
 .shopify/*
 .shopify.lock
+# Generated shade-index visual test harness (regenerate via scripts/build-delta-tester.ts)
+tester/
