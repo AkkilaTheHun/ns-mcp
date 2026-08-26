@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { requestContext } from "./context.js";
 import { clearSession } from "./session.js";
 import { handleAuthBegin, handleAuthCallback, handleOAuthAuthorize, handleOAuthAuthorizeVerify, handleOAuthToken, registeredOAuthClients } from "./shopify/auth.js";
+import { warmDropboxToken } from "./dropbox/client.js";
 
 const app = express();
 app.set("trust proxy", 1); // Render runs behind a load balancer
@@ -222,6 +223,9 @@ app.delete("/mcp", mcpAuth, async (req, res) => {
 });
 
 // --- Start server ---
+// Pay the synchronous token read at boot, not inside the first request.
+warmDropboxToken();
+
 app.listen(config.port, () => {
   console.log(`Nailstuff MCP server running on port ${config.port}`);
   console.log(`MCP endpoint: ${config.hostUrl}/mcp`);

@@ -83,10 +83,20 @@ function getToken(): string {
   const tokenFile = process.env.DROPBOX_TOKEN_FILE;
   if (tokenFile) {
     let raw: string;
+    const startedAt = Date.now();
     try {
       raw = readFileSync(tokenFile, "utf-8");
     } catch (err) {
       throw new Error(`Failed to read Dropbox token from ${tokenFile}: ${err}`);
+    }
+    const elapsed = Date.now() - startedAt;
+    // This read is synchronous and blocks the entire event loop. On a cold
+    // bind-mounted dataset it can take seconds, during which the process
+    // answers nothing at all — which reads as a hang with no log output.
+    // warmDropboxToken() moves it to startup; this warns if it ever happens
+    // on a request path anyway.
+    if (elapsed > 250) {
+      console.warn(`[dropbox] Token read from ${tokenFile} blocked the event loop for ${elapsed}ms`);
     }
     cachedToken = normalizeToken(raw, tokenFile);
     return cachedToken;
@@ -531,4 +541,28 @@ function cleanSharedLink(url: string): string {
   // Rebuild with just the essential params
   const clean = `${parsed.origin}${parsed.pathname}`;
   return rlkey ? `${clean}?rlkey=${rlkey}&dl=0` : `${clean}?dl=0`;
+}
+
+
+/**
+ * Resolve and cache the Dropbox token at startup.
+ *
+ * getToken() is lazy, synchronous, and reads from a bind-mounted dataset. Left
+ * to the first request, that read blocks the event loop mid-call: the first
+ * Dropbox-touching request after a restart stalls with no log line, and a small
+ * warm-up call "fixes" it by paying the cost early. Pay it at boot instead, and
+ * surface a malformed token as a startup error rather than a runtime hang.
+ */
+export function warmDropboxToken(): void {
+  if (!process.env.DROPBOX_ACCESS_TOKEN && !process.env.DROPBOX_TOKEN_FILE) {
+    console.warn("[dropbox] No DROPBOX_ACCESS_TOKEN or DROPBOX_TOKEN_FILE set — Dropbox calls will fail");
+    return;
+  }
+  const startedAt = Date.now();
+  try {
+    const t = getToken();
+    console.log(`[dropbox] Token loaded at startup (${t.length} chars, ${Date.now() - startedAt}ms)`);
+  } catch (err) {
+    console.error(`[dropbox] FATAL: token unusable — Dropbox calls will fail: ${err}`);
+  }
 }

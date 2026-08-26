@@ -395,6 +395,10 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       }
 
       const isDropbox = folderId ? isDropboxSource(folderId) : false;
+      const resolveStartedAt = Date.now();
+      if (folderId) {
+        console.log(`[analyze] Resolving ${isDropbox ? "Dropbox" : "Drive"} folder: ${folderId}`);
+      }
 
       // Collect all images (with subfolder path)
       interface TaggedFile extends DriveFile { subfolder: string | null }
@@ -549,6 +553,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         };
       }
 
+      if (folderId) {
+        console.log(`[analyze] Resolved "${folderName}" -> ${allFiles.length} files in ${Date.now() - resolveStartedAt}ms`);
+      }
       console.log(`[analyze] Starting: ${allFiles.length} images in "${folderName}" for ${brand} - ${productName} (recursive: ${recursive}, provider: ${provider}${model ? `, model: ${model}` : ""}, fullWidth: ${fullWidth}, closeup: ${closeup}${cropTargetColor ? `, cropTargetColor: "${cropTargetColor}"` : ""}${preview ? ", PREVIEW" : ""})`);
       const startTime = Date.now();
 
