@@ -63,6 +63,7 @@ export interface ImageAnalysisLike {
     flakeColors?: ColorEntry[] | null;
     glitterColors?: ColorEntry[] | null;
     shiftColors?: ColorEntry[] | null;
+    shimmerFlashColors?: ColorEntry[] | null;
   } | null;
   componentFinish?: {
     glitterFinish?: string | null;
@@ -523,12 +524,24 @@ function resolveFlakeAttrs(analysis: ImageAnalysisLike): FlakeAttrs {
   const d = analysis.discriminators;
   const cf = analysis.componentFinish;
 
-  // flakeColors is the measured particle palette; the scrape took
-  // dominantColors[1..3], which mixes base, shift and glitter entries.
-  const measuredFlakeHex = (d?.flakeColors ?? [])
-    .map(entryHex)
-    .filter((h): h is string => !!h && !!safeHexToLab(h))
-    .slice(0, 3);
+  // The catalog has ONE colour slot for effect particles (embedding dims
+  // 21..29), but a polish carries its particles in different fields depending
+  // on what it is: flakes for a flakie, shimmerFlash/shift for a multichrome
+  // or shimmer, glitter for a glitter topper. Filling the slot only from
+  // flakeColors blanks the particle signature of every non-flake polish, and
+  // for a multichrome the colour travel IS the identifying feature — two
+  // different blue shimmers would otherwise be indistinguishable here.
+  //
+  // Order matters: prefer the field that actually characterises this polish.
+  const pickHex = (entries?: ColorEntry[] | null) =>
+    (entries ?? []).map(entryHex).filter((h): h is string => !!h && !!safeHexToLab(h));
+
+  const measuredFlakeHex = pickHex(d?.flakeColors).slice(0, 3);
+  const particleHex = (
+    measuredFlakeHex.length
+      ? measuredFlakeHex
+      : [...pickHex(d?.shimmerFlashColors), ...pickHex(d?.shiftColors), ...pickHex(d?.glitterColors)]
+  ).filter((h, i, arr) => arr.indexOf(h) === i).slice(0, 3);
 
   const finishText = `${cf?.flakeFinish ?? ""} ${cf?.glitterFinish ?? ""}`.toLowerCase();
   const hasIridescent = finishText.includes("iridescent")
@@ -561,15 +574,10 @@ function resolveFlakeAttrs(analysis: ImageAnalysisLike): FlakeAttrs {
     hasHolographic,
     hasUltrachrome,
     flakeSize,
-    // No flakes means no flake colours. The legacy scrape takes
-    // dominantColors[1..3] regardless, which on a flake-free shimmer polish
-    // stores the shimmer as "flake colours" and pushes them into the
-    // embedding's flake dimensions.
-    flakeColorsHex: !hasFlakeEvidence
-      ? []
-      : measuredFlakeHex.length
-        ? measuredFlakeHex
-        : scraped.flakeColorsHex,
+    // Particle palette, not strictly flakes. Falls back to the legacy scrape
+    // only when the structured block carried nothing at all, so a polish is
+    // never left with an empty particle signature.
+    flakeColorsHex: particleHex.length ? particleHex : scraped.flakeColorsHex,
   };
 }
 
