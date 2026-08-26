@@ -116,7 +116,11 @@ async function analyzeRawClaude(
   const Anthropic = (await import("@anthropic-ai/sdk")).default;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var not set");
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({
+    apiKey,
+    timeout: Number(process.env.ANTHROPIC_TIMEOUT_MS ?? "90000"),
+    maxRetries: Number(process.env.ANTHROPIC_MAX_RETRIES ?? "1"),
+  });
   const media = ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mimeType.toLowerCase())
     ? (mimeType.toLowerCase() as "image/jpeg") : "image/jpeg";
   const res = await client.messages.create({

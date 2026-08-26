@@ -32,14 +32,13 @@ import { shopifyGraphQL, throwIfUserErrors } from "../../shopify/client.js";
 import { getCurrentSessionId } from "../../context.js";
 import { getSessionShop } from "../../session.js";
 import { config } from "../../config.js";
+import { isDropboxSource } from "../../dropbox/source.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function isDropbox(source: string): boolean {
-  return source.includes("dropbox.com/") || source.startsWith("/");
-}
+const isDropbox = isDropboxSource;
 
 /** Sanitize a filename for staging: replace problematic chars, append swatcher. */
 function stagingFilename(originalName: string, swatcherHandle?: string): string {

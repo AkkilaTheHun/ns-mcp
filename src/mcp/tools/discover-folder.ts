@@ -19,6 +19,7 @@ import {
   listOwnSubfolders,
   type DropboxFile,
 } from "../../dropbox/client.js";
+import { isDropboxSource } from "../../dropbox/source.js";
 
 // ---------------------------------------------------------------------------
 // Filename parsing
@@ -55,9 +56,7 @@ interface DiscoveredProduct {
 // Source detection
 // ---------------------------------------------------------------------------
 
-function isDropboxUrl(input: string): boolean {
-  return input.includes("dropbox.com/") || input.includes("dropboxusercontent.com/");
-}
+const isDropboxUrl = isDropboxSource;
 
 // ---------------------------------------------------------------------------
 // Dropbox scanning

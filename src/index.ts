@@ -107,9 +107,35 @@ app.get("/.well-known/oauth-protected-resource", (_req, res) => {
 // Map to track active transports by session ID
 const transports = new Map<string, StreamableHTTPServerTransport>();
 
+/**
+ * Describe a JSON-RPC body in one line. Logging only "Body type: object" meant
+ * that when a call hung there was no way to tell which tool was running — a
+ * silent 9-minute stall was indistinguishable from an idle server.
+ */
+function describeRpc(body: unknown): string {
+  const b = body as { method?: string; params?: { name?: string } } | undefined;
+  if (!b?.method) return "(no method)";
+  return b.method === "tools/call" && b.params?.name
+    ? `tools/call ${b.params.name}`
+    : b.method;
+}
+
 app.post("/mcp", mcpAuth, async (req, res) => {
-  // Log request details for debugging
-  console.log(`MCP POST - Accept: ${req.headers.accept}, Content-Type: ${req.headers["content-type"]}, Session: ${req.headers["mcp-session-id"] ?? "none"}, Body type: ${typeof req.body}`);
+  const rpc = describeRpc(req.body);
+  const sess = (req.headers["mcp-session-id"] as string | undefined) ?? "none";
+  const startedAt = Date.now();
+  console.log(`MCP POST -> ${rpc} (session ${sess})`);
+
+  // Log completion regardless of how the response ends, so a hang is visible as
+  // a "->" with no matching "<-".
+  let settled = false;
+  const done = (how: string) => {
+    if (settled) return;
+    settled = true;
+    console.log(`MCP POST <- ${rpc} ${how} in ${Date.now() - startedAt}ms (session ${sess})`);
+  };
+  res.on("finish", () => done(`${res.statusCode}`));
+  res.on("close", () => done(res.writableEnded ? `${res.statusCode}` : "CLOSED-EARLY"));
 
   try {
     // Check for existing session

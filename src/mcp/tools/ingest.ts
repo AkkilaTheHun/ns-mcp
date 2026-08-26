@@ -3,6 +3,7 @@ import { z } from "zod";
 import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, listSubfolders, type DriveFile } from "../../google/drive.js";
 import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, downloadSharedFile, listOwnFolderImages, listOwnSubfolders, downloadOwnFile } from "../../dropbox/client.js";
+import { isDropboxSource, toDropboxPath } from "../../dropbox/source.js";
 import type { ImageAnalysis } from "../../google/vision.js";
 import { analyzeWithRetry, type VisionProvider } from "../../vision/analyze.js";
 import type { PromptContext } from "../../vision/schema.js";
@@ -152,6 +153,55 @@ async function colorTargetedCrop(
   return { buffer, matchStrength: totalWeight };
 }
 
+/**
+ * Attention-located crop that extracts NATIVE pixels.
+ *
+ * The previous implementation used `.resize({fit:"cover", position:attention})`,
+ * which scales the whole frame down to the crop size and only then cuts. On a
+ * square source — which every swatcher shoot is — "cover" has nothing to cut,
+ * so attention became a no-op and the "closeup" was just the full frame
+ * downscaled to 800px: strictly less detail than the full image it was meant to
+ * supplement. Measured on 1500x1500 and 2500x2500 frames, individual flakes and
+ * glitter particles dissolved into an undifferentiated sparkle wash, which is
+ * exactly the signal flakeColors/glitterColors/flakeSize are read from.
+ *
+ * Attention still picks WHERE to look (it has real offsets whenever the aspect
+ * ratio is not square), but the pixels come from `.extract()` at 1:1.
+ */
+async function attentionNativeCrop(
+  rotated: sharp.Sharp,
+  cropSize: number,
+  fullW: number,
+  fullH: number,
+): Promise<Buffer> {
+  const cw = Math.min(cropSize, fullW);
+  const ch = Math.min(cropSize, fullH);
+
+  // Probe for the region attention would have chosen. cropOffset* are in the
+  // scaled coordinate space, so map the centre back to full resolution.
+  let cx = fullW / 2;
+  let cy = fullH / 2;
+  try {
+    const scale = Math.max(cropSize / fullW, cropSize / fullH);
+    const { info } = await rotated.clone()
+      .resize({ width: cropSize, height: cropSize, fit: "cover", position: sharp.strategy.attention })
+      .toBuffer({ resolveWithObject: true });
+    cx = ((info.cropOffsetLeft ?? 0) * -1 + cropSize / 2) / scale;
+    cy = ((info.cropOffsetTop ?? 0) * -1 + cropSize / 2) / scale;
+  } catch {
+    // Fall back to centre — these are centred product shots.
+  }
+
+  const left = Math.max(0, Math.min(fullW - cw, Math.round(cx - cw / 2)));
+  const top = Math.max(0, Math.min(fullH - ch, Math.round(cy - ch / 2)));
+
+  return rotated.clone()
+    .extract({ left, top, width: cw, height: ch })
+    .resize({ width: cropSize, height: cropSize, fit: "cover", withoutEnlargement: true })
+    .jpeg({ quality: 95 })
+    .toBuffer();
+}
+
 async function processImage(
   file: DriveFile,
   context: PromptContext,
@@ -183,10 +233,23 @@ async function processImage(
     // are single-use.
     const rotated = sharp(raw, { failOn: "none" }).rotate();
 
-    const analysisBuffer = await rotated.clone()
-      .resize({ width: fullWidth, withoutEnlargement: true })
-      .jpeg({ quality: 92 })
-      .toBuffer();
+    // Re-encoding a JPEG that is already within the size budget only discards
+    // sparkle: measured on a 1500x1500 swatch, q92 cut 1683 KB to 507 KB at
+    // identical pixel dimensions. Pass the original bytes through when nothing
+    // would actually change — but only when no EXIF rotation is pending and the
+    // source is already JPEG, since both are applied by the encode path.
+    const srcMeta = await rotated.clone().metadata();
+    const needsRotate = (srcMeta.orientation ?? 1) !== 1;
+    const withinBudget = (srcMeta.width ?? 0) <= fullWidth && (srcMeta.height ?? 0) <= fullWidth;
+    const ANALYSIS_BYTES_MAX = 4_500_000; // Anthropic caps images at 5 MB
+
+    const analysisBuffer =
+      srcMeta.format === "jpeg" && !needsRotate && withinBudget && raw.length <= ANALYSIS_BYTES_MAX
+        ? raw
+        : await rotated.clone()
+            .resize({ width: fullWidth, withoutEnlargement: true })
+            .jpeg({ quality: 92 })
+            .toBuffer();
 
     let cropBuffer: Buffer | undefined;
     let cropStrategy: "color" | "attention" | undefined;
@@ -202,13 +265,12 @@ async function processImage(
         }
       }
       if (!cropBuffer) {
-        cropBuffer = await rotated.clone()
-          .resize({ width: 800, height: 800, fit: "cover", position: sharp.strategy.attention })
-          // q95: the closeup exists to judge particle morphology, which is
-          // precisely what JPEG artifacts destroy. Anthropic's vision docs warn
-          // heavy compression is "detrimental to model performance".
-          .jpeg({ quality: 95 })
-          .toBuffer();
+        // q95 inside the helper: the closeup exists to judge particle
+        // morphology, which is precisely what JPEG artifacts destroy.
+        // Anthropic's vision docs warn heavy compression is "detrimental to
+        // model performance".
+        const meta = await rotated.clone().metadata();
+        cropBuffer = await attentionNativeCrop(rotated, 800, meta.width ?? 800, meta.height ?? 800);
         cropStrategy = "attention";
       }
     }
@@ -332,7 +394,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         };
       }
 
-      const isDropbox = folderId?.includes("dropbox.com/");
+      const isDropbox = folderId ? isDropboxSource(folderId) : false;
 
       // Collect all images (with subfolder path)
       interface TaggedFile extends DriveFile { subfolder: string | null }
@@ -344,27 +406,23 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         let useOwnFolder = false;
         let ownPath = "";
 
-        try {
-          const meta = await getSharedLinkMetadata(folderId);
-          folderName = meta.name;
-        } catch {
-          // Shared link failed — try as own folder path
-          const pathMatch = folderId.match(/dropbox\.com\/home\/(.+?)(?:\?|$)/);
-          if (pathMatch) {
-            ownPath = "/" + decodeURIComponent(pathMatch[1]);
-            folderName = ownPath.split("/").pop() ?? "Dropbox";
-            useOwnFolder = true;
-          } else {
-            // Not a /home/ path — retry shared link and let it throw
-            try {
-              const meta = await getSharedLinkMetadata(folderId);
-              folderName = meta.name;
-            } catch (err) {
-              return {
-                content: [{ type: "text" as const, text: `Error accessing Dropbox folder: ${err}` }],
-                isError: true,
-              };
-            }
+        // A path-shaped source ("/Folder/Sub", "dropbox:/...", a /home/ URL) is
+        // addressable directly. Only genuine shared links (/scl/fo/, /s/) need
+        // the sharing API, so don't spend a round trip probing for one.
+        const directPath = toDropboxPath(folderId);
+        if (directPath !== null) {
+          ownPath = directPath.startsWith("/") || directPath.startsWith("ns:") ? directPath : "/" + directPath;
+          folderName = ownPath.split("/").filter(Boolean).pop() ?? "Dropbox";
+          useOwnFolder = true;
+        } else {
+          try {
+            const meta = await getSharedLinkMetadata(folderId);
+            folderName = meta.name;
+          } catch (err) {
+            return {
+              content: [{ type: "text" as const, text: `Error accessing Dropbox folder: ${err}` }],
+              isError: true,
+            };
           }
         }
 

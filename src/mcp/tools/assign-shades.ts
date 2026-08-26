@@ -26,8 +26,9 @@ import { listOwnFolderImages, downloadOwnFile } from "../../dropbox/client.js";
 import { listFolderImages, downloadFile } from "../../google/drive.js";
 import { assignShades, type ShadeCandidate } from "../../vision/assign-shades.js";
 import { buildIndexSheet, type Exemplar } from "../../vision/index-sheet.js";
+import { isDropboxSource } from "../../dropbox/source.js";
 
-const isDropbox = (source: string) => source.startsWith("/") || source.toLowerCase().startsWith("dropbox:");
+const isDropbox = isDropboxSource;
 const dropboxPath = (source: string) => source.replace(/^dropbox:/i, "");
 
 /**

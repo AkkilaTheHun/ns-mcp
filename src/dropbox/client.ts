@@ -10,26 +10,86 @@ import { readFileSync } from "fs";
 const DROPBOX_API = "https://api.dropboxapi.com/2";
 const DROPBOX_CONTENT = "https://content.dropboxapi.com/2";
 
+/**
+ * Every Dropbox call goes through here so none of them can hang forever.
+ *
+ * Unbounded fetches took the whole ingest chain offline for ~9 minutes with no
+ * log output when a malformed token made auth fail: undici's default
+ * headersTimeout is 300s, and folder resolution issues two calls back to back.
+ * A stalled network call must become a fast, named error, not silence.
+ */
+const API_TIMEOUT_MS = Number(process.env.DROPBOX_TIMEOUT_MS ?? "30000");
+const CONTENT_TIMEOUT_MS = Number(process.env.DROPBOX_CONTENT_TIMEOUT_MS ?? "120000");
+
+async function dbxFetch(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = API_TIMEOUT_MS,
+): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    const name = (err as Error)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error(`Dropbox request timed out after ${timeoutMs}ms: ${url.replace(DROPBOX_API, "").replace(DROPBOX_CONTENT, "")}`);
+    }
+    throw err;
+  }
+}
+
 let cachedToken: string | undefined;
+
+/**
+ * Accept both a bare token and an env-style `DROPBOX_ACCESS_TOKEN=...` line,
+ * then sanity-check the result.
+ *
+ * The token file was once saved in env format. `.trim()` alone happily produced
+ * a 1502-character "token" that was sent as a bearer credential, so every
+ * Dropbox call failed auth for four hours before anyone noticed. A credential
+ * that cannot possibly be valid must fail loudly at the source, not silently on
+ * every downstream call.
+ */
+function normalizeToken(raw: string, source: string): string {
+  let t = raw.trim();
+
+  // Strip an env-file assignment prefix and any surrounding quotes.
+  const assigned = t.match(/^[A-Z_][A-Z0-9_]*\s*=\s*(.*)$/s);
+  if (assigned) {
+    t = assigned[1].trim();
+    console.warn(`[dropbox] ${source} contained an env-style assignment; using the value after "=". Store only the bare token.`);
+  }
+  t = t.replace(/^["']|["']$/g, "").trim();
+
+  if (!t) throw new Error(`Dropbox token from ${source} is empty`);
+  if (/\s/.test(t)) {
+    throw new Error(`Dropbox token from ${source} contains whitespace (length ${t.length}) — it is not a bare token`);
+  }
+  if (!/^sl\.|^[A-Za-z0-9_-]{20,}$/.test(t)) {
+    throw new Error(`Dropbox token from ${source} does not look like a Dropbox token (starts with "${t.slice(0, 8)}")`);
+  }
+  return t;
+}
 
 function getToken(): string {
   if (cachedToken) return cachedToken;
 
   // Try env var first
   if (process.env.DROPBOX_ACCESS_TOKEN) {
-    cachedToken = process.env.DROPBOX_ACCESS_TOKEN.trim();
+    cachedToken = normalizeToken(process.env.DROPBOX_ACCESS_TOKEN, "DROPBOX_ACCESS_TOKEN");
     return cachedToken;
   }
 
   // Try file path (for long tokens that don't fit in TrueNAS env var fields)
   const tokenFile = process.env.DROPBOX_TOKEN_FILE;
   if (tokenFile) {
+    let raw: string;
     try {
-      cachedToken = readFileSync(tokenFile, "utf-8").trim();
-      return cachedToken;
+      raw = readFileSync(tokenFile, "utf-8");
     } catch (err) {
       throw new Error(`Failed to read Dropbox token from ${tokenFile}: ${err}`);
     }
+    cachedToken = normalizeToken(raw, tokenFile);
+    return cachedToken;
   }
 
   throw new Error("Set DROPBOX_ACCESS_TOKEN env var or DROPBOX_TOKEN_FILE path");
@@ -81,7 +141,7 @@ export async function listSharedFolder(
   let hasMore = true;
 
   // Initial request
-  const res = await fetch(`${DROPBOX_API}/files/list_folder`, {
+  const res = await dbxFetch(`${DROPBOX_API}/files/list_folder`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
@@ -108,7 +168,7 @@ export async function listSharedFolder(
 
   // Paginate if needed
   while (hasMore && cursor) {
-    const contRes = await fetch(`${DROPBOX_API}/files/list_folder/continue`, {
+    const contRes = await dbxFetch(`${DROPBOX_API}/files/list_folder/continue`, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({ cursor }),
@@ -179,7 +239,7 @@ export async function listSharedSubfolders(
  * Creates parent folders automatically if they don't exist.
  */
 export async function createDropboxFolder(path: string): Promise<{ path: string; name: string }> {
-  const res = await fetch(`${DROPBOX_API}/files/create_folder_v2`, {
+  const res = await dbxFetch(`${DROPBOX_API}/files/create_folder_v2`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({ path, autorename: false }),
@@ -214,7 +274,7 @@ export async function copyDropboxFile(
   const retries = opts.retries ?? 6;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const res = await fetch(`${DROPBOX_API}/files/copy_v2`, {
+    const res = await dbxFetch(`${DROPBOX_API}/files/copy_v2`, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({ from_path: fromPath, to_path: toPath, autorename }),
@@ -261,7 +321,7 @@ export async function copyDropboxFile(
  * destroying it, so this is recoverable from the Dropbox UI.
  */
 export async function deleteDropboxFile(path: string): Promise<{ path: string }> {
-  const res = await fetch(`${DROPBOX_API}/files/delete_v2`, {
+  const res = await dbxFetch(`${DROPBOX_API}/files/delete_v2`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({ path }),
@@ -282,7 +342,7 @@ export async function moveDropboxFile(
   fromPath: string,
   toPath: string,
 ): Promise<{ path: string; name: string }> {
-  const res = await fetch(`${DROPBOX_API}/files/move_v2`, {
+  const res = await dbxFetch(`${DROPBOX_API}/files/move_v2`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({ from_path: fromPath, to_path: toPath, autorename: true }),
@@ -309,7 +369,7 @@ export async function downloadSharedFile(
   sharedLink: string,
   filePath: string,
 ): Promise<Buffer> {
-  const res = await fetch(`${DROPBOX_CONTENT}/sharing/get_shared_link_file`, {
+  const res = await dbxFetch(`${DROPBOX_CONTENT}/sharing/get_shared_link_file`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${getToken()}`,
@@ -318,7 +378,7 @@ export async function downloadSharedFile(
         path: filePath,
       }),
     },
-  });
+  }, CONTENT_TIMEOUT_MS);
 
   if (!res.ok) {
     const body = await res.text();
@@ -334,7 +394,7 @@ export async function downloadSharedFile(
 export async function getSharedLinkMetadata(
   sharedLink: string,
 ): Promise<{ name: string; tag: string; path?: string }> {
-  const res = await fetch(`${DROPBOX_API}/sharing/get_shared_link_metadata`, {
+  const res = await dbxFetch(`${DROPBOX_API}/sharing/get_shared_link_metadata`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({ url: cleanSharedLink(sharedLink) }),
@@ -369,7 +429,7 @@ export async function listOwnFolder(
   let cursor: string | undefined;
   let hasMore = true;
 
-  const res = await fetch(`${DROPBOX_API}/files/list_folder`, {
+  const res = await dbxFetch(`${DROPBOX_API}/files/list_folder`, {
     method: "POST",
     headers: headers(),
     body: JSON.stringify({
@@ -394,7 +454,7 @@ export async function listOwnFolder(
   cursor = data.cursor;
 
   while (hasMore && cursor) {
-    const contRes = await fetch(`${DROPBOX_API}/files/list_folder/continue`, {
+    const contRes = await dbxFetch(`${DROPBOX_API}/files/list_folder/continue`, {
       method: "POST",
       headers: headers(),
       body: JSON.stringify({ cursor }),
@@ -441,13 +501,13 @@ export async function listOwnSubfolders(path: string): Promise<Array<{ name: str
  * Download a file from the authenticated user's own Dropbox.
  */
 export async function downloadOwnFile(path: string): Promise<Buffer> {
-  const res = await fetch(`${DROPBOX_CONTENT}/files/download`, {
+  const res = await dbxFetch(`${DROPBOX_CONTENT}/files/download`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${getToken()}`,
       "Dropbox-API-Arg": JSON.stringify({ path }),
     },
-  });
+  }, CONTENT_TIMEOUT_MS);
 
   if (!res.ok) {
     const body = await res.text();
