@@ -101,6 +101,17 @@ function parseEmbedding(raw: number[] | string | null): number[] | null {
   }
 }
 
+/** Colour entries as analyze_images emits them: {hex, label} or a bare string. */
+const colorEntry = z.union([z.string(), z.object({ hex: z.string().optional(), label: z.string() })]);
+const colorBlock = z.object({
+  baseColor: colorEntry.nullable().optional(),
+  bottleEdgeColor: colorEntry.nullable().optional(),
+  flakeColors: z.array(colorEntry).nullable().optional(),
+  glitterColors: z.array(colorEntry).nullable().optional(),
+  shiftColors: z.array(colorEntry).nullable().optional(),
+  shimmerFlashColors: z.array(colorEntry).nullable().optional(),
+}).passthrough();
+
 /**
  * Translate operator ground truth into aggregate overrides.
  *
@@ -194,7 +205,21 @@ Actions:
         lightingCondition: z.string().optional(),
         skinTone: z.string().nullable().optional(),
         nailCount: z.number().optional(),
-      }).optional(),
+        // The structured measurement block. zod strips unknown keys, so
+        // without these declared the whole block was discarded at the tool
+        // boundary and the indexer silently fell back to scraping
+        // dominantColors — which is what it had always done.
+        discriminators: colorBlock.optional().nullable(),
+        componentFinish: z.object({
+          glitterFinish: z.string().nullable().optional(),
+          flakeFinish: z.string().nullable().optional(),
+          flakeSize: z.string().nullable().optional(),
+        }).optional().nullable(),
+        // Split scores. Only the legacy single `confidence` was stored, so the
+        // distinction between "blurry frame" and "ambiguous shade" was lost.
+        imageQuality: z.number().optional(),
+        identification: z.number().optional(),
+      }).passthrough().optional(),
 
       // add_image extras
       sourcePath: z.string().optional().describe("dropbox path, shopify file URL, or external URL"),
@@ -268,6 +293,14 @@ Actions:
               confidence: p.analysis.confidence ?? null,
               vision_provider: p.visionProvider ?? null,
               vision_model: p.visionModel ?? null,
+              // Store the raw measurement, not just what we derived from it.
+              // Without this, any change to extraction or embedding layout
+              // means re-running vision on every image to recover inputs we
+              // already paid for once.
+              discriminators: p.analysis.discriminators ?? null,
+              component_finish: p.analysis.componentFinish ?? null,
+              image_quality: p.analysis.imageQuality ?? null,
+              identification: p.analysis.identification ?? null,
               base_color_hex: features.baseColorHex ?? null,
               base_color_lab: features.baseColorLab,
               embedding: features.embedding,
