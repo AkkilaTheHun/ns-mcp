@@ -539,10 +539,21 @@ function resolveFlakeAttrs(analysis: ImageAnalysisLike): FlakeAttrs {
   const hasHolographic = finishText.includes("holographic") ? true : scraped.hasHolographic;
   const hasUltrachrome = /ultrachrome|chameleon/.test(finishText) ? true : scraped.hasUltrachrome;
 
+  // A size is only meaningful if there are flakes to size. The model will
+  // report flakeSize:"fine" alongside flakeColors:[] and flakeFinish:null —
+  // sizing the glitter, not flakes — and taking that at face value puts a flake
+  // size on a shade with no flakes. Require corroborating evidence.
+  const hasFlakeEvidence =
+    measuredFlakeHex.length > 0 ||
+    !!(cf?.flakeFinish && cf.flakeFinish.trim()) ||
+    /\bflak/i.test(analysis.observedEffects?.join(" ") ?? "");
+
   const declaredSize = (cf?.flakeSize ?? "").toLowerCase();
-  const flakeSize = (FLAKE_SIZE_KEYS as readonly string[]).includes(declaredSize)
-    ? (declaredSize as FlakeSizeKey)
-    : scraped.flakeSize;
+  const flakeSize: FlakeSizeKey = !hasFlakeEvidence
+    ? "none"
+    : (FLAKE_SIZE_KEYS as readonly string[]).includes(declaredSize)
+      ? (declaredSize as FlakeSizeKey)
+      : scraped.flakeSize;
 
   return {
     ...scraped,
@@ -550,7 +561,15 @@ function resolveFlakeAttrs(analysis: ImageAnalysisLike): FlakeAttrs {
     hasHolographic,
     hasUltrachrome,
     flakeSize,
-    flakeColorsHex: measuredFlakeHex.length ? measuredFlakeHex : scraped.flakeColorsHex,
+    // No flakes means no flake colours. The legacy scrape takes
+    // dominantColors[1..3] regardless, which on a flake-free shimmer polish
+    // stores the shimmer as "flake colours" and pushes them into the
+    // embedding's flake dimensions.
+    flakeColorsHex: !hasFlakeEvidence
+      ? []
+      : measuredFlakeHex.length
+        ? measuredFlakeHex
+        : scraped.flakeColorsHex,
   };
 }
 
