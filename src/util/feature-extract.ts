@@ -39,10 +39,41 @@ export interface FlakeAttrs {
   flakeColorsHex: string[];
 }
 
+type ColorEntry = { hex?: string; label: string } | string;
+
 export interface ImageAnalysisLike {
-  dominantColors: Array<{ hex?: string; label: string } | string>;
+  dominantColors: Array<ColorEntry>;
   observedEffects: string[];
   altText?: string;
+  /**
+   * The structured measurement block from analyze_images.
+   *
+   * Everything below used to be re-derived by scraping dominantColors and
+   * regex-matching observedEffects, which discarded the fields the vision
+   * prompt was built to produce: flake colours came out as dominantColors[1..3]
+   * (base and shift colours mixed in), hasIridescent was false whenever the
+   * word did not appear in observedEffects even though flakeFinish said
+   * "iridescent", and the base colour was the shimmer-dominated nail read
+   * rather than the sampled base. Prefer these; fall back to scraping only when
+   * a field is absent.
+   */
+  discriminators?: {
+    baseColor?: ColorEntry | null;
+    bottleEdgeColor?: ColorEntry | null;
+    flakeColors?: ColorEntry[] | null;
+    glitterColors?: ColorEntry[] | null;
+    shiftColors?: ColorEntry[] | null;
+  } | null;
+  componentFinish?: {
+    glitterFinish?: string | null;
+    flakeFinish?: string | null;
+    flakeSize?: string | null;
+  } | null;
+}
+
+function entryHex(e: ColorEntry | null | undefined): string | undefined {
+  if (!e || typeof e === "string") return undefined;
+  return e.hex;
 }
 
 /** Normalize an LAB triple from CIE ranges to a [0,1]-ish space for embedding stability. */
@@ -464,6 +495,65 @@ export function buildEmbedding(params: {
   return v;
 }
 
+/**
+ * Base colour, preferring the sampled measurement over the scraped one.
+ *
+ * dominantColors[0] is whatever the model listed first, which on a
+ * shimmer-dense or flake-dense polish is the effect layer, not the base.
+ * discriminators.baseColor is explicitly sampled from the flattest face-on
+ * area. bottleEdgeColor is the fallback because a thin layer at the bottle rim
+ * shows the true base where the nail read cannot.
+ */
+function resolveBaseColor(analysis: ImageAnalysisLike): { hex?: string; lab: Lab | null } {
+  const d = analysis.discriminators;
+  for (const candidate of [d?.baseColor, d?.bottleEdgeColor]) {
+    const hex = entryHex(candidate);
+    const lab = safeHexToLab(hex);
+    if (hex && lab) return { hex, lab };
+  }
+  return extractBaseColor(analysis.dominantColors);
+}
+
+/**
+ * Flake attributes, preferring the structured block and falling back to the
+ * legacy scrape per-field rather than all-or-nothing.
+ */
+function resolveFlakeAttrs(analysis: ImageAnalysisLike): FlakeAttrs {
+  const scraped = extractFlakeAttrs(analysis.observedEffects, analysis.dominantColors);
+  const d = analysis.discriminators;
+  const cf = analysis.componentFinish;
+
+  // flakeColors is the measured particle palette; the scrape took
+  // dominantColors[1..3], which mixes base, shift and glitter entries.
+  const measuredFlakeHex = (d?.flakeColors ?? [])
+    .map(entryHex)
+    .filter((h): h is string => !!h && !!safeHexToLab(h))
+    .slice(0, 3);
+
+  const finishText = `${cf?.flakeFinish ?? ""} ${cf?.glitterFinish ?? ""}`.toLowerCase();
+  const hasIridescent = finishText.includes("iridescent")
+    ? true
+    : finishText.includes("holographic") || finishText.includes("metallic")
+      ? scraped.hasIridescent
+      : scraped.hasIridescent;
+  const hasHolographic = finishText.includes("holographic") ? true : scraped.hasHolographic;
+  const hasUltrachrome = /ultrachrome|chameleon/.test(finishText) ? true : scraped.hasUltrachrome;
+
+  const declaredSize = (cf?.flakeSize ?? "").toLowerCase();
+  const flakeSize = (FLAKE_SIZE_KEYS as readonly string[]).includes(declaredSize)
+    ? (declaredSize as FlakeSizeKey)
+    : scraped.flakeSize;
+
+  return {
+    ...scraped,
+    hasIridescent,
+    hasHolographic,
+    hasUltrachrome,
+    flakeSize,
+    flakeColorsHex: measuredFlakeHex.length ? measuredFlakeHex : scraped.flakeColorsHex,
+  };
+}
+
 /** Convenience: extract structured fields + embedding from an image analysis. */
 export function extractAndEmbed(analysis: ImageAnalysisLike): {
   baseColorHex: string | undefined;
@@ -471,8 +561,8 @@ export function extractAndEmbed(analysis: ImageAnalysisLike): {
   flake: FlakeAttrs;
   embedding: Vector50;
 } {
-  const base = extractBaseColor(analysis.dominantColors);
-  const flake = extractFlakeAttrs(analysis.observedEffects, analysis.dominantColors);
+  const base = resolveBaseColor(analysis);
+  const flake = resolveFlakeAttrs(analysis);
   const embedding = buildEmbedding({ baseColorLab: base.lab, flake });
 
   // Fill flake-color LAB dims

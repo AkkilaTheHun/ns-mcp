@@ -14,7 +14,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getSupabase, isSupabaseConfigured } from "../../supabase/client.js";
-import { recomputeShadeAggregate } from "../../supabase/recompute.js";
+import { recomputeShadeAggregate, type VendorAttrs } from "../../supabase/recompute.js";
 import {
   extractAndEmbed,
   type ImageAnalysisLike,
@@ -101,6 +101,42 @@ function parseEmbedding(raw: number[] | string | null): number[] | null {
   }
 }
 
+/**
+ * Translate operator ground truth into aggregate overrides.
+ *
+ * polishType is the store's vocabulary (crelly, sheer, thermal...); finish_type
+ * in the catalog is a narrower set. Only map values that exist in both and
+ * leave the rest to the vote rather than inventing a finish. Absent input
+ * returns undefined, so aggregation behaves exactly as before.
+ */
+const POLISH_TYPE_TO_FINISH: Record<string, string | undefined> = {
+  creme: "creme", crelly: "crelly", jelly: "jelly", holo: "holo", magnetic: "magnetic",
+  // sheer/topper/top-coat/thermal/uv/glow-in-the-dark/crackle have no
+  // finish_type equivalent — the per-image vote stays in charge there.
+};
+
+function vendorAttrsFrom(polishType?: string, polishFinishes?: string[]): VendorAttrs | undefined {
+  if (!polishType && !polishFinishes?.length) return undefined;
+
+  const attrs: VendorAttrs = {};
+  if (polishType) {
+    const mapped = POLISH_TYPE_TO_FINISH[polishType];
+    if (mapped) attrs.finishType = mapped;
+    if (polishType === "thermal") attrs.hasThermal = true;
+    if (polishType === "magnetic") attrs.hasMagnetic = true;
+    if (polishType === "holo") attrs.hasHolographic = true;
+  }
+  if (polishFinishes?.length) {
+    const f = new Set(polishFinishes);
+    if (f.has("holographic")) attrs.hasHolographic = true;
+    if (f.has("multichrome") || f.has("duochrome")) attrs.hasUltrachrome = true;
+    // "flakes" is the operator word for larger pieces, "flakies" for micro.
+    if (f.has("flakes")) attrs.flakeSize = "large";
+    else if (f.has("flakies")) attrs.flakeSize = "fine";
+  }
+  return Object.keys(attrs).length ? attrs : undefined;
+}
+
 export function registerShadeIndexTool(server: McpServer): void {
   server.tool(
     "shade_index",
@@ -139,6 +175,8 @@ Actions:
       // add_image / identify shared
       brand: z.string().optional(),
       shadeName: z.string().optional().describe("Required for add_image; optional filter for list_shades"),
+      polishType: z.enum(["creme","crelly","jelly","sheer","topper","top-coat","magnetic","thermal","holo","uv","glow-in-the-dark","crackle"]).optional().describe("Operator ground truth for polish TYPE — the SAME value passed to analyze_images. Without it the aggregate re-derives finish from what the model saw per frame, so a crelly whose shimmer reads as multichrome in 20 of 24 frames lands as 'multichrome' and the ground truth never reaches the database. Supplied here it BYPASSES the per-image vote."),
+      polishFinishes: z.array(z.enum(["glitter","shimmer","metallic","holographic","glossy","opaque","matte","reflective","duochrome","multichrome","flakies","flakes","chrome","foil"])).optional().describe("Operator ground truth for the finish set, same value passed to analyze_images. Sets the has_* booleans directly instead of inferring them from per-frame wording."),
       collection: z.string().optional(),
       shopifyProductId: z.string().optional(),
       shopifyHandle: z.string().optional(),
@@ -213,7 +251,10 @@ Actions:
               shopifyHandle: p.shopifyHandle,
             });
 
-            const { error: insertErr } = await supabase.from("image_signatures").insert({
+            // Upsert, not insert: re-indexing a folder used to append a second
+            // full set of rows, and the aggregate was then computed over the
+            // duplicates. Requires the unique index on (shade_id, source_path).
+            const { error: insertErr } = await supabase.from("image_signatures").upsert({
               shade_id: shadeId,
               source_path: p.sourcePath,
               swatcher_handle: p.swatcherHandle ?? null,
@@ -230,14 +271,16 @@ Actions:
               base_color_hex: features.baseColorHex ?? null,
               base_color_lab: features.baseColorLab,
               embedding: features.embedding,
-            });
+            }, { onConflict: "shade_id,source_path" });
             if (insertErr) return fail(`Failed to insert image_signatures: ${insertErr.message}`);
 
-            await recomputeShadeAggregate(shadeId);
+            const vendorAttrs = vendorAttrsFrom(p.polishType, p.polishFinishes);
+            await recomputeShadeAggregate(shadeId, vendorAttrs);
 
             return ok({
               shadeId,
               shadeCreated: created,
+              vendorOverrides: vendorAttrs ?? null,
               brand: p.brand,
               shadeName: p.shadeName,
               extractedAttrs: features.flake,
@@ -431,7 +474,7 @@ Actions:
           // ---------------------------------------------------------------
           case "recompute_shade": {
             if (!p.shadeId) return fail("recompute_shade requires shadeId");
-            await recomputeShadeAggregate(p.shadeId);
+            await recomputeShadeAggregate(p.shadeId, vendorAttrsFrom(p.polishType, p.polishFinishes));
             return ok({ shadeId: p.shadeId, recomputed: true });
           }
 

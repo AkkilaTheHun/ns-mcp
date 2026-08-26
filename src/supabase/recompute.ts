@@ -210,20 +210,29 @@ export async function recomputeShadeAggregate(
   // sufficient flake-weight (suppresses "I see fine flakes through
   // tinted bottle glass" votes).
   // ------------------------------------------------------------------
+  // Weighted mode, not max. Taking the largest size present let two outlying
+  // frames out of twenty-four decide the shade: 22 images reported "none" and
+  // the aggregate still came back "fine". A flake size is a property of the
+  // polish, so it should be what most of the evidence says, not what the most
+  // generous frame says.
   const sizeRank = { none: 0, fine: 1, medium: 2, large: 3 } as const;
   type SizeKey = keyof typeof sizeRank;
-  let maxSize: SizeKey = "none";
+  const sizeWeights = new Map<SizeKey, number>();
   for (const p of perImage) {
     if (p.flakeWeight < FLAKE_SIZE_VOTE_THRESHOLD) continue;
-    if (sizeRank[p.flake.flakeSize] > sizeRank[maxSize]) maxSize = p.flake.flakeSize;
+    sizeWeights.set(p.flake.flakeSize, (sizeWeights.get(p.flake.flakeSize) ?? 0) + p.flakeWeight);
   }
-  // Fallback: if no image cleared the threshold, allow unweighted max
-  if (maxSize === "none") {
+  // Fallback: nothing cleared the weight threshold — vote unweighted so a
+  // low-confidence set still yields an answer rather than defaulting to none.
+  if (sizeWeights.size === 0) {
     for (const p of perImage) {
-      if (sizeRank[p.flake.flakeSize] > sizeRank[maxSize]) maxSize = p.flake.flakeSize;
+      sizeWeights.set(p.flake.flakeSize, (sizeWeights.get(p.flake.flakeSize) ?? 0) + 1);
     }
   }
-  const flakeSize = maxSize === "none" ? null : maxSize;
+  // Ties break toward the larger size — under-calling a flake is the worse error.
+  const winningSize = [...sizeWeights.entries()]
+    .sort((a, b) => b[1] - a[1] || sizeRank[b[0]] - sizeRank[a[0]])[0]?.[0] ?? "none";
+  const flakeSize = winningSize === "none" ? null : winningSize;
 
   // ------------------------------------------------------------------
   // flake_colors_hex: top-3 by weighted frequency
