@@ -30,6 +30,7 @@ import { registerTranslateTool } from "./tools/translate.js";
 import { registerFetchVendorTool } from "./tools/fetch-vendor.js";
 import { registerRetireTool } from "./tools/retire.js";
 import { registerOrganizeImagesTool } from "./tools/organize-images.js";
+import { registerAssignShadesGateway } from "./tools/assign-shades.js";
 import { registerGenerateImageTool } from "./tools/generate-image.js";
 import { registerShadeIndexTool } from "./tools/shade-index.js";
 import { registerThemeGateway } from "./tools/theme.js";
@@ -153,6 +154,7 @@ THEME EDITS (shopify_theme): Never edit the live (MAIN) theme directly — dupli
   registerIngestTools(server);           // analyze_images: vision analysis on folder images (supports recursive)
   registerShopifyPreflightTool(server);  // shopify_preflight: SKU, dedup, references, brand, all metaobjects + swatchers
   registerOrganizeImagesTool(server);    // organize_images: staging folders for shade review before creation
+  registerAssignShadesGateway(server);   // assign_shades: constrained match of a shoot against N candidate descriptions
   registerCreateProductTool(server);     // create_product: full Shopify creation sequence + media + translation + publishing
   registerTranslateTool(server);         // translate_for_market: US market SEO overrides
 

@@ -33,3 +33,12 @@ extensions/*/dist
 .shopify.lock
 # Generated shade-index visual test harness (regenerate via scripts/build-delta-tester.ts)
 tester/
+
+# Vision experiment artefacts — contact sheets, index sheets, per-run JSON.
+# 132MB of images; regenerate with scripts/verify-sheet.ts and friends.
+output/
+
+# Scratch files that accumulated during development
+pageexample.html
+*.tar.gz
+*.tar.gz.sha256

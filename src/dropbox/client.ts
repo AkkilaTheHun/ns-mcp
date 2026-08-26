@@ -206,20 +206,73 @@ export async function createDropboxFolder(path: string): Promise<{ path: string;
 export async function copyDropboxFile(
   fromPath: string,
   toPath: string,
-): Promise<{ path: string; name: string }> {
-  const res = await fetch(`${DROPBOX_API}/files/copy_v2`, {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ from_path: fromPath, to_path: toPath, autorename: true }),
-  });
+  opts: { autorename?: boolean; retries?: number } = {},
+): Promise<{ path: string; name: string; skipped?: boolean }> {
+  // autorename defaults to FALSE so a re-run is idempotent: an existing target
+  // means the copy already happened, not that we should make a second copy.
+  const autorename = opts.autorename ?? false;
+  const retries = opts.retries ?? 6;
 
-  if (!res.ok) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = await fetch(`${DROPBOX_API}/files/copy_v2`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ from_path: fromPath, to_path: toPath, autorename }),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as { metadata: { path_display: string; name: string } };
+      return { path: data.metadata.path_display, name: data.metadata.name };
+    }
+
     const body = await res.text();
+
+    // Already there — treat as done so reruns are safe.
+    if (body.includes("to/conflict/file")) {
+      return { path: toPath, name: toPath.split("/").pop() ?? toPath, skipped: true };
+    }
+
+    // Dropbox rate-limits writes aggressively and returns two distinct 429s:
+    // `too_many_requests` carries a retry_after in seconds, while
+    // `too_many_write_operations` is namespace lock contention with
+    // retry_after 0 and needs a short backoff of our own choosing.
+    if (res.status === 429) {
+      if (attempt === retries) throw new Error(`Dropbox copy rate-limited after ${retries} retries: ${body.slice(0, 200)}`);
+      let waitMs = 500 * 2 ** attempt;
+      try {
+        const parsed = JSON.parse(body) as { error?: { retry_after?: number } };
+        const ra = parsed.error?.retry_after;
+        if (typeof ra === "number" && ra > 0) waitMs = ra * 1000;
+      } catch { /* use the backoff */ }
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+
     throw new Error(`Dropbox copy failed (${res.status}): ${body.slice(0, 300)}`);
   }
 
-  const data = (await res.json()) as { metadata: { path_display: string; name: string } };
-  return { path: data.metadata.path_display, name: data.metadata.name };
+  throw new Error("unreachable");
+}
+
+/**
+ * Delete a file or folder in the user's own Dropbox.
+ *
+ * Dropbox moves the item to the account's "Deleted files" area rather than
+ * destroying it, so this is recoverable from the Dropbox UI.
+ */
+export async function deleteDropboxFile(path: string): Promise<{ path: string }> {
+  const res = await fetch(`${DROPBOX_API}/files/delete_v2`, {
+    method: "POST",
+    headers: headers(),
+    body: JSON.stringify({ path }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    // Already gone is success for our purposes.
+    if (body.includes("path_lookup/not_found")) return { path };
+    throw new Error(`Dropbox delete failed (${res.status}): ${body.slice(0, 300)}`);
+  }
+  return { path };
 }
 
 /**

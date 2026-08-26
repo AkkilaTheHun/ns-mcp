@@ -3,11 +3,11 @@ import { z } from "zod";
 import sharp from "sharp";
 import { listFolderImages, downloadFile, getFolderMeta, listSubfolders, type DriveFile } from "../../google/drive.js";
 import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, downloadSharedFile, listOwnFolderImages, listOwnSubfolders, downloadOwnFile } from "../../dropbox/client.js";
-import { analyzeImage as analyzeImageGemini, type ImageAnalysis } from "../../google/vision.js";
-import { analyzeImage as analyzeImageClaude } from "../../anthropic/vision.js";
+import type { ImageAnalysis } from "../../google/vision.js";
+import { analyzeWithRetry, type VisionProvider } from "../../vision/analyze.js";
+import type { PromptContext } from "../../vision/schema.js";
+import { buildPixelIndex, snapAnalysis, type SnapReport } from "../../vision/snap.js";
 import { parseColor, rgbToLab, deltaE76 } from "../../util/color.js";
-
-type VisionProvider = "gemini" | "claude";
 
 /** Cache for URL-downloaded buffers so processImage can access them by "fileId" (which is the URL). */
 const urlBufferCache = new Map<string, Buffer>();
@@ -22,6 +22,7 @@ interface AnalyzedImage {
   originalSizeBytes: number;
   analysis: ImageAnalysis;
   proposedFilename: string;
+  snapReport?: SnapReport;
 }
 
 /** Generate an SEO-friendly filename from brand, product, image type, and position. */
@@ -153,13 +154,14 @@ async function colorTargetedCrop(
 
 async function processImage(
   file: DriveFile,
-  context: { productName: string; brand: string; vendorHint?: string },
+  context: PromptContext,
   provider: VisionProvider,
   model?: string,
-  fullWidth: number = 900,
-  closeup: boolean = false,
+  fullWidth: number = 1568,
+  closeup: boolean = true,
   preview: boolean = false,
   cropTargetColor?: string,
+  snapColors: boolean = true,
 ): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; preview?: PreviewBuffers; error?: { fileId: string; filename: string; error: string } }> {
   try {
     // Resolve the image buffer: URL cache → Dropbox download → Drive download
@@ -202,7 +204,10 @@ async function processImage(
       if (!cropBuffer) {
         cropBuffer = await rotated.clone()
           .resize({ width: 800, height: 800, fit: "cover", position: sharp.strategy.attention })
-          .jpeg({ quality: 92 })
+          // q95: the closeup exists to judge particle morphology, which is
+          // precisely what JPEG artifacts destroy. Anthropic's vision docs warn
+          // heavy compression is "detrimental to model performance".
+          .jpeg({ quality: 95 })
           .toBuffer();
         cropStrategy = "attention";
       }
@@ -221,16 +226,40 @@ async function processImage(
       };
     }
 
-    const analyzeFn = provider === "claude" ? analyzeImageClaude : analyzeImageGemini;
-    const analysis = await analyzeFn(
+    const analysis = await analyzeWithRetry(
       analysisBuffer.toString("base64"),
       "image/jpeg",
       context,
-      model,
-      cropBuffer ? { base64: cropBuffer.toString("base64"), mimeType: "image/jpeg" } : undefined,
+      {
+        provider,
+        model,
+        crop: cropBuffer ? { base64: cropBuffer.toString("base64"), mimeType: "image/jpeg" } : undefined,
+        attempts: 2,
+        onRetry: (attempt, reason) =>
+          console.warn(`[analyze] RETRY ${file.name} (attempt ${attempt}): ${reason}`),
+      },
     );
 
-    console.log(`[analyze] Vision done [${provider}] ${file.name}: ${analysis.imageType} (confidence: ${analysis.confidence})`);
+    console.log(`[analyze] Vision done [${provider}] ${file.name}: ${analysis.imageType} (quality: ${analysis.imageQuality}, id: ${analysis.identification})`);
+
+    // Snap reported colours onto real pixel clusters. Without this the hexes
+    // are the model's reconstruction rather than a measurement, and everything
+    // downstream (embedding, ΔE match, clustering) consumes them as if they
+    // had been sampled.
+    let snapReport: SnapReport | undefined;
+    if (!snapColors) {
+      // caller opted out
+    } else {
+      try {
+        const index = await buildPixelIndex(analysisBuffer);
+        snapReport = snapAnalysis(index, analysis);
+        if (snapReport.maxMovedDeltaE > 0) {
+          console.log(`[analyze] Snapped ${file.name}: ${snapReport.snappedCount} colours, mean ${snapReport.meanMovedDeltaE} / max ${snapReport.maxMovedDeltaE} ΔE moved${snapReport.unsnappedCount ? `, ${snapReport.unsnappedCount} had no pixel support` : ""}`);
+        }
+      } catch (err) {
+        console.warn(`[analyze] Snap failed for ${file.name}, keeping reported colours: ${err}`);
+      }
+    }
 
     return {
       result: {
@@ -239,6 +268,7 @@ async function processImage(
         parentFolderId: file.parentId,
         originalSizeBytes: file.size,
         analysis,
+        snapReport,
       },
     };
   } catch (err) {
@@ -278,16 +308,21 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
       recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders)"),
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
-      provider: z.enum(["gemini", "claude"]).optional().default("gemini").describe("Vision provider: 'gemini' (default, Gemini 2.5 Flash) or 'claude' (Claude Sonnet 4.6)"),
+      provider: z.enum(["gemini", "claude"]).optional().default("claude").describe("Vision provider. Defaults to 'claude' (Sonnet 4.6). Gemini's confidence is miscalibrated — it returns 1.0 on wrong answers and its run-to-run base-colour spread is ~2.5x Claude's on the same image — so it poisons the shade catalog. Use 'gemini' only for deliberate A/B comparison."),
       model: z.string().optional().describe("Override the default model for the chosen provider. Examples: 'gemini-2.5-pro', 'claude-opus-4-7'. Defaults: gemini='gemini-2.5-flash', claude='claude-sonnet-4-6'."),
-      fullWidth: z.number().optional().default(900).describe("Width in px to resize the full image to before sending to the vision model (default 900). Higher = more detail but more tokens."),
-      closeup: z.boolean().optional().default(false).describe("When true, also send a Sharp attention-cropped 800x800 close-up alongside the full image in the same API call. Helps distinguish flake morphology (large ultrachrome shards vs small iridescent particles)."),
+      fullWidth: z.number().optional().default(1568).describe("Width in px to resize the full image to before sending (default 1568). 1568 is the standard-tier long-edge cap Claude downscales to, so anything smaller discards fidelity for free; Claude 4.7+ run a high-resolution tier at 2576. Measured: 900->1400 cut run-to-run base-colour spread from 5.1 to 3.0 deltaE."),
+      closeup: z.boolean().optional().default(true).describe("Send a Sharp attention-cropped 800x800 close-up alongside the full image in the same call (default true). This is the ONLY config that resolves particle morphology: flakeSize and iridescence are returned as null/none without it, so componentFinish.flakeSize depends on it."),
+      snapColors: z.boolean().optional().default(true).describe("Snap every reported colour onto the nearest real pixel cluster in the image via LAB mean-shift (default true). Vision models return colours that are approximately right in hue but reconstructed, not sampled: measured on a 257-image set, most reported hexes had under 1% of pixels within deltaE 10 of them. Downstream consumers treat these as measurements, so snapping is what makes them one. The audit trail (how far each colour moved) is returned as colorSnapping."),
+      polishFinishes: z.array(z.enum(["glitter","shimmer","metallic","holographic","glossy","opaque","matte","reflective","duochrome","multichrome","flakies","flakes","chrome","foil"])).optional().describe("Operator ground truth for the polish type (from Shopify custom.nailstuff_polish_type). Switches the prompt to a type-specific measurement procedure, because what IDENTIFIES a polish differs by type: a magnetic is identified by its concentrated line colour (two magnetics often share a base and differ only in line colour), a thermal by its pair of states, a multichrome by its full travel range, a creme by base colour alone. Measured: with one generic prompt, magnetics fragmented into 13 clusters from 26 images while other types gave 3-4. Pass this whenever the type is known."),
+      polishType: z.enum(["creme","crelly","jelly","sheer","topper","top-coat","magnetic","thermal","holo","uv","glow-in-the-dark","crackle"]).optional().describe("Operator ground truth for polish TYPE, from Shopify custom.nailstuff_polish_type or the vendor description. NOT inferred from the image: measured on a 10-shade collection, vision classification of type got 5 wrong, always reporting the loudest optical effect (both thermals read as glitter, a magnetic as multichrome, two clear-base toppers as holo). Switches the prompt to a type-specific procedure — telling the model a polish is magnetic and to read the base AWAY from the band cut frame-to-frame base disagreement from 81.0 to 6.7 deltaE.")
+      , expectedFeatures: z.record(z.string(), z.union([z.string(), z.array(z.string())])).optional().describe("What the vendor says this shade contains, e.g. {baseColor:'sheer red', magneticLineColor:'orange'}. Passed as expectations to VERIFY, never as answers to echo: it tells the model where to look without telling it what to conclude, and disagreements are reported rather than suppressed."),
+      collectionMode: z.boolean().optional().default(false).describe("Set true when analyzing a folder containing MANY different shades. The model is told the shade is unknown, must describe features only, and must never name or guess a shade. Without this, passing a shade name (or a vendorHint listing a collection's shades) makes the model CHOOSE a shade and assert it at high confidence — measured: identification scores rose ~0.09 purely from being handed a name. Alt text is templated after the operator assigns the shade."),
       preview: z.boolean().optional().default(false).describe("Debug mode. When true, skip the vision API call entirely and return the prepared image buffers (full + crop if closeup=true) as renderable image blocks so you can inspect what would have been sent. Useful for verifying the attention crop isn't landing on a knuckle or bottle cap."),
       previewFormat: z.enum(["image", "data"]).optional().default("image").describe("Format for preview output. 'image' (default) returns inline image content blocks (rendered by Claude.ai). 'data' returns JSON with base64 strings — use this for Claude Code where inline image rendering doesn't work in most terminals; the agent can then decode to /tmp and open them with the OS image viewer."),
       cropTargetColor: z.string().optional().describe("Target color for the closeup crop. Accepts hex (e.g. '#a8c5e8') or a known name (pastel blue, pastel mint, pastel teal, pink, purple, lavender, periwinkle, grey, etc). When set, the crop is centered on the weighted centroid of pixels matching this color in LAB space — useful for swatcher folders where the catalog color is known and you want to avoid attention landing on bottle caps or skin. Falls back to attention crop if the color match is too weak."),
-      structured: z.boolean().optional().default(false).describe("When true, return the FULL structured analysis for PROGRAMMATIC callers: dominantColors as {hex,label} objects (not just label strings), plus lightingCondition, skinTone, nailCount. Default false keeps the token-light label-only output for LLM consumers. Set true when feeding the result into shade_index add_image so base_color_hex and the colour embedding get populated (parity with the CLI scripts that call analyzeImage() directly)."),
+      structured: z.boolean().optional().default(true).describe("Return the FULL structured analysis (default true): separate bottleColors/nailColors, the discriminators block (baseColor, shiftColors, shimmerFlashColors, magneticLineColor, glitterColors, flakeColors, thermalCold/Warm), componentFinish, and split imageQuality/identification scores. The hex values are the most useful output and are required by shade_index add_image. Set false only for token-light label-only output to an LLM consumer."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, preview, previewFormat, cropTargetColor, structured }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, collectionMode, polishType, polishFinishes, expectedFeatures, snapColors, preview, previewFormat, cropTargetColor, structured }) => {
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -462,12 +497,12 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const cap = maxImages ?? 50;
       const filesToProcess = allFiles.slice(0, cap);
       const skippedAfterCap = Math.max(0, allFiles.length - cap);
-      const context = { productName, brand, vendorHint };
+      const context: PromptContext = { productName, brand, vendorHint, collectionMode, polishType, polishFinishes, expectedFeatures };
 
       const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
       const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
         console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
-        return processImage(file, context, provider, model, fullWidth, closeup, preview, cropTargetColor);
+        return processImage(file, context, provider, model, fullWidth, closeup, preview, cropTargetColor, snapColors);
       });
 
       // Preview mode: return prepared image buffers as renderable blocks instead of vision analyses
@@ -515,7 +550,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
 
       const results: Array<AnalyzedImage & { subfolder: string | null }> = [];
       const errors: Array<{ fileId: string; filename: string; subfolder: string | null; error: string }> = [];
-      const lowConfidence: Array<{ fileId: string; filename: string; confidence: number; reason: string }> = [];
+      const lowConfidence: Array<{ fileId: string; filename: string; imageQuality: number; identification: number; reason: string }> = [];
 
       let position = 0;
       for (let i = 0; i < processed.length; i++) {
@@ -525,14 +560,23 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
           position++;
           const proposedFilename = toSeoFilename(brand, productName, p.result.analysis.imageType, position);
           results.push({ ...p.result, proposedFilename, subfolder: file.subfolder });
-          if (p.result.analysis.confidence < 0.75) {
+          // The two scores mean different things and route differently: a
+          // blurry frame is a reshoot, an ambiguous shade needs an operator
+          // decision. Flagging them under one number sent both to the same pile.
+          const { imageQuality, identification } = p.result.analysis;
+          if (imageQuality < 0.75 || identification < 0.75) {
             lowConfidence.push({
               fileId: p.result.fileId,
               filename: p.result.filename,
-              confidence: p.result.analysis.confidence,
-              reason: p.result.analysis.imageType === "unknown"
-                ? "Could not classify image type"
-                : `Low confidence on ${p.result.analysis.imageType} classification`,
+              imageQuality,
+              identification,
+              reason: p.result.analysis.parseFailed
+                ? "Model reply did not parse after retry"
+                : imageQuality < 0.75 && identification < 0.75
+                  ? "Image is hard to read AND the shade is ambiguous"
+                  : imageQuality < 0.75
+                    ? "Image quality low (blur/exposure/framing) — candidate for reshoot"
+                    : "Image is clear but the shade is ambiguous from this frame — needs operator assignment",
             });
           }
         }
@@ -570,15 +614,29 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
             : (r.analysis.dominantColors ?? []).map((c) => (typeof c === "string" ? c : c?.label ?? "")).filter(Boolean),
           observedEffects: r.analysis.observedEffects ?? [],
           altText: r.analysis.altText,
-          confidence: r.analysis.confidence,
+          // proposedFilename was previously computed and then dropped from the
+          // response, so callers never saw the SEO name and push_to_product fell
+          // back to positional numbering. It carries the image type, which is
+          // the part positional numbering cannot recover.
+          proposedFilename: r.proposedFilename,
           ...(structured
             ? {
+                // Never merged — a bottle reading and a nail reading of the same
+                // polish are expected to differ (see vision/schema.ts).
+                bottleColors: r.analysis.bottleColors,
+                nailColors: r.analysis.nailColors,
+                discriminators: r.analysis.discriminators,
+                componentFinish: r.analysis.componentFinish,
+                imageQuality: r.analysis.imageQuality,
+                identification: r.analysis.identification,
+                ...(r.snapReport
+                  ? { colorSnapping: { snapped: r.snapReport.snappedCount, noPixelSupport: r.snapReport.unsnappedCount, meanMovedDeltaE: r.snapReport.meanMovedDeltaE, maxMovedDeltaE: r.snapReport.maxMovedDeltaE } }
+                  : {}),
                 lightingCondition: r.analysis.lightingCondition,
                 skinTone: r.analysis.skinTone,
                 nailCount: r.analysis.nailCount,
               }
-            : {}),
-          // Default omits (to save tokens): proposedFilename, lightingCondition, nailCount, skinTone, originalSizeKB, hex colors
+            : { confidence: r.analysis.confidence }),
         })),
         ...(skippedAfterCap > 0 ? { skippedAfterCap } : {}),
         ...(lowConfidence.length > 0 ? { lowConfidence } : {}),

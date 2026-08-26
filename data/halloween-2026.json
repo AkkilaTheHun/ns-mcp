@@ -1,0 +1,385 @@
+{
+  "_note": "Operator ground truth for Cadillacquer Halloween 2026, supplied by the store owner 2026-08-22. This is the authoritative source for polishType and expectedFeatures — NOT vision inference, which got 5 of these 10 types wrong (both thermals read as 'glitter', a magnetic as 'multichrome', two clear-base toppers as 'linear_holo'/'crelly'). vendorDescription is quoted verbatim; the structured fields below it are a reading of that text, so correct the structure rather than the quote if they disagree.",
+  "brand": "Cadillacquer",
+  "collection": "Halloween 2026",
+  "shades": {
+    "Once You See It": {
+      "vendorDescription": "orange magnetic in a sheer red base packed with green to blue aurora shimmer.",
+      "polishType": "magnetic",
+      "finishes": [
+        "shimmer",
+        "metallic"
+      ],
+      "expectedFeatures": {
+        "baseColor": "sheer red",
+        "magneticLineColor": "orange",
+        "shimmerFlashColors": [
+          "green",
+          "blue"
+        ]
+      },
+      "_finishNote": "Aurora shimmer TRAVELS (green->blue / red->orange) but that is a travelling shimmer, recorded in shimmerFlashColors. It is NOT a multichrome body; tagging it multichrome injects contradictory baseColor guidance.",
+      "uniqueKey": "orange magnetic band over a SHEER RED base; aurora shimmer TRAVELS green->blue"
+    },
+    "I Found A Place": {
+      "vendorDescription": "lime green magnetic in a sheer teal base, packed with red to orange aurora shimmer",
+      "polishType": "magnetic",
+      "finishes": [
+        "shimmer",
+        "metallic"
+      ],
+      "expectedFeatures": {
+        "baseColor": "sheer teal",
+        "magneticLineColor": "lime green",
+        "shimmerFlashColors": [
+          "red",
+          "orange"
+        ]
+      },
+      "_pairedWith": "Once You See It — the two magnetics. Base colours are both sheer and similar in value; the BAND colour (orange vs lime green) is the discriminator (spec 1.3).",
+      "_finishNote": "Aurora shimmer TRAVELS (green->blue / red->orange) but that is a travelling shimmer, recorded in shimmerFlashColors. It is NOT a multichrome body; tagging it multichrome injects contradictory baseColor guidance.",
+      "uniqueKey": "lime green magnetic band over a SHEER TEAL base; aurora shimmer TRAVELS red->orange"
+    },
+    "I'll Be Right Back": {
+      "vendorDescription": "clear base packed with blue micro flakes, blue shimmer and charcoal and red reflective glitter",
+      "polishType": "topper",
+      "finishes": [
+        "flakies",
+        "shimmer",
+        "glitter",
+        "reflective"
+      ],
+      "expectedFeatures": {
+        "baseColor": "clear",
+        "flakeColors": [
+          "blue"
+        ],
+        "shimmerFlashColors": [
+          "blue"
+        ],
+        "glitterColors": [
+          "charcoal",
+          "red"
+        ]
+      },
+      "_pairedWith": "You Wished For This — both clear-base reflective-glitter toppers. Flake colour (blue vs pink/red-orange-to-yellow) and glitter colour (red vs blue) are the discriminators.",
+      "uniqueKey": "CLEAR base topper; SINGLE blue shimmer, blue micro flakes, RED reflective glitter"
+    },
+    "You Wished For This": {
+      "vendorDescription": "clear base packed with pinkish/red orange to yellow micro flakes and charcoal and blue reflective glitter",
+      "polishType": "topper",
+      "finishes": [
+        "flakies",
+        "glitter",
+        "reflective"
+      ],
+      "expectedFeatures": {
+        "baseColor": "clear",
+        "flakeColors": [
+          "pink",
+          "red-orange",
+          "yellow"
+        ],
+        "glitterColors": [
+          "charcoal",
+          "blue"
+        ]
+      },
+      "uniqueKey": "CLEAR base topper; NO shimmer; warm pink/red-orange->yellow micro flakes, BLUE reflective glitter"
+    },
+    "It's All For You": {
+      "vendorDescription": "teal green base, packed with purple shimmer",
+      "polishType": "crelly",
+      "finishes": [
+        "shimmer"
+      ],
+      "expectedFeatures": {
+        "baseColor": "teal green",
+        "shimmerFlashColors": [
+          "purple"
+        ]
+      },
+      "_pairedWith": "Fear What You Will Become — both teal bases with a warm-toned shimmer. Base saturation (clean teal green vs murky teal) and shimmer travel (purple vs magenta-to-orange) are the discriminators.",
+      "uniqueKey": "TEAL GREEN base packed with SINGLE purple shimmer; no travel, no particles"
+    },
+    "Keep Doubting": {
+      "vendorDescription": "deep mulberry base, packed with blue shimmer",
+      "polishType": "crelly",
+      "finishes": [
+        "shimmer"
+      ],
+      "expectedFeatures": {
+        "baseColor": "deep mulberry",
+        "shimmerFlashColors": [
+          "blue"
+        ]
+      },
+      "uniqueKey": "DEEP MULBERRY base packed with SINGLE blue shimmer; no travel, no particles. Dense blue shimmer can dominate the frame while mulberry shows at edges and low angles"
+    },
+    "Fear What You Will Become": {
+      "vendorDescription": "murky teal base, packed with magenta to orange shimmer",
+      "polishType": "crelly",
+      "finishes": [
+        "shimmer"
+      ],
+      "expectedFeatures": {
+        "baseColor": "murky teal",
+        "shimmerFlashColors": [
+          "magenta",
+          "orange"
+        ]
+      },
+      "_finishNote": "magenta->orange is shimmer travel, not a multichrome body.",
+      "uniqueKey": "MURKY TEAL base; shimmer TRAVELS magenta->orange"
+    },
+    "What Could Possibly Go Wrong?": {
+      "vendorDescription": "deep indigo base, packed with green to blue shimmer",
+      "polishType": "crelly",
+      "finishes": [
+        "shimmer"
+      ],
+      "expectedFeatures": {
+        "baseColor": "deep indigo",
+        "shimmerFlashColors": [
+          "green",
+          "blue"
+        ]
+      },
+      "uniqueKey": "DEEP INDIGO base; shimmer TRAVELS green->blue; NO magnetic band"
+    },
+    "What Lurks Within": {
+      "vendorDescription": "a blackened eggplant (cold) to blueish grey (warm) thermal, with light blue iridescent flakes and matte neon pink glitter in different sizes",
+      "polishType": "thermal",
+      "finishes": [
+        "glitter",
+        "flakies",
+        "flakes"
+      ],
+      "expectedFeatures": {
+        "thermalCold": "blackened eggplant",
+        "thermalWarm": "blueish grey",
+        "flakeColors": [
+          "light blue"
+        ],
+        "glitterColors": [
+          "neon pink"
+        ]
+      },
+      "componentFinish": {
+        "glitterFinish": "matte",
+        "flakeFinish": "iridescent"
+      },
+      "_componentNote": "The GLITTER is matte, the polish is not. Never tag this product Matte (spec 1.4). 'in different sizes' means both flakies and flakes apply.",
+      "_pairedWith": "Strange Happenings — near-identical thermals. Warm state (blueish grey vs dusty blue), flake colour (light blue vs pink) and glitter colour (neon pink vs neon green) are the discriminators.",
+      "uniqueKey": "THERMAL eggplant->BLUEISH GREY; light blue iridescent flakes + matte NEON PINK glitter"
+    },
+    "Strange Happenings": {
+      "vendorDescription": "a blackened eggplant (cold) to dusty blue (warm) thermal, with pink iridescent flakes and matte neon green glitter in different sizes",
+      "polishType": "thermal",
+      "finishes": [
+        "glitter",
+        "flakies",
+        "flakes"
+      ],
+      "expectedFeatures": {
+        "thermalCold": "blackened eggplant",
+        "thermalWarm": "dusty blue",
+        "flakeColors": [
+          "pink"
+        ],
+        "glitterColors": [
+          "neon green"
+        ]
+      },
+      "componentFinish": {
+        "glitterFinish": "matte",
+        "flakeFinish": "iridescent"
+      },
+      "_componentNote": "The GLITTER is matte, the polish is not. Never tag this product Matte (spec 1.4).",
+      "uniqueKey": "THERMAL eggplant->DUSTY BLUE; pink iridescent flakes + matte NEON GREEN glitter"
+    }
+  },
+  "_anchors": {
+    "Keep Doubting": "CONFIRMED by store owner 2026-08-22: the BLUE-dominant group (_always_polished_, lacquer_is_life, Heeymercedes) is Keep Doubting. Doseoflolade's mulberry-base/pink-shimmer frames in that folder are NOT this shade.",
+    "Doseoflolade 13:22-13:24": "Keep Doubting (owner-identified). Frames read BLUE — that is the blue shimmer over the mulberry base.",
+    "Doseoflolade 13:42-13:43": "What Could Possibly Go Wrong? (owner-identified). Frames read TEAL-GREEN — that is the green-to-blue shimmer over the indigo base.",
+    "Doseoflolade 14:08-14:11": "Fear What You Will Become (owner-identified). Frames read MULBERRY/PINK — that is the magenta shimmer over the murky teal base.",
+    "Doseoflolade 14:42-14:45": "I'll Be Right Back (owner-identified). Clear-base topper over a dark layer."
+  },
+  "_discrimination": {
+    "_note": "Derived from the vendorDescription text, structurally rather than as prose. The critical axis the first pass missed: shimmer is either a SINGLE colour or TRAVELS between two ('X to Y'). Only three shades have a single-colour shimmer, which narrows most matches in one step.",
+    "singleColourShimmer": [
+      "It's All For You (purple)",
+      "Keep Doubting (blue)",
+      "I'll Be Right Back (blue)"
+    ],
+    "travellingShimmer": [
+      "Once You See It (green->blue)",
+      "I Found A Place (red->orange)",
+      "Fear What You Will Become (magenta->orange)",
+      "What Could Possibly Go Wrong? (green->blue)"
+    ],
+    "confusablePairs": [
+      {
+        "pair": [
+          "Keep Doubting",
+          "I'll Be Right Back"
+        ],
+        "discriminator": "base colour",
+        "values": {
+          "Keep Doubting": "deep mulberry",
+          "I'll Be Right Back": "clear/transparent"
+        }
+      },
+      {
+        "pair": [
+          "It's All For You",
+          "Fear What You Will Become"
+        ],
+        "discriminator": "shimmer travel",
+        "values": {
+          "It's All For You": "purple, single colour",
+          "Fear What You Will Become": "magenta THROUGH orange, travels"
+        }
+      },
+      {
+        "pair": [
+          "Once You See It",
+          "What Could Possibly Go Wrong?"
+        ],
+        "discriminator": "magnetic band present",
+        "values": {
+          "Once You See It": "yes - orange concentrated band",
+          "What Could Possibly Go Wrong?": "no band at all"
+        }
+      },
+      {
+        "pair": [
+          "Once You See It",
+          "I Found A Place"
+        ],
+        "discriminator": "magnetic band colour",
+        "values": {
+          "Once You See It": "orange band over sheer red",
+          "I Found A Place": "lime green band over sheer teal"
+        }
+      },
+      {
+        "pair": [
+          "What Lurks Within",
+          "Strange Happenings"
+        ],
+        "discriminator": "glitter colour",
+        "values": {
+          "What Lurks Within": "matte neon PINK glitter, light blue flakes",
+          "Strange Happenings": "matte neon GREEN glitter, pink flakes"
+        }
+      },
+      {
+        "pair": [
+          "I'll Be Right Back",
+          "You Wished For This"
+        ],
+        "discriminator": "reflective glitter colour",
+        "values": {
+          "I'll Be Right Back": "RED glitter, BLUE micro flakes",
+          "You Wished For This": "BLUE glitter, warm pink/red-orange/yellow micro flakes"
+        }
+      }
+    ]
+  },
+  "_readingRule": {
+    "title": "ON A 'PACKED WITH' POLISH, THE FRAME-DOMINANT COLOUR IS THE SHIMMER, NOT THE BASE",
+    "evidence": "Owner-identified four Doseoflolade bursts on 2026-08-22. In every case the assistant and the model had named the shade after its shimmer: 'blue' frames were mulberry-based Keep Doubting; 'teal-green' frames were indigo-based What Could Possibly Go Wrong?; 'mulberry/pink' frames were murky-teal-based Fear What You Will Become. Three for three, the same direction of error.",
+    "consequence": "Any instruction to read the base from the flattest, most face-on, or largest-area patch is WRONG for these polishes - that is exactly where the shimmer fires hardest. The base must be read where the shimmer is NOT firing."
+  },
+  "_operatorCorrections": {
+    "01.08.26, 19 58 44": {
+      "swatcher": "_always_polished_",
+      "shade": "I'll Be Right Back",
+      "note": "Owner-identified 2026-08-22. Burst segmentation split these off the 19:56-19:58 I'll Be Right Back run; evidence floor then declined to guess. Same continuous session, same polish."
+    },
+    "01.08.26, 20 00 17": {
+      "swatcher": "_always_polished_",
+      "shade": "I'll Be Right Back",
+      "note": "Owner-identified 2026-08-22. See 19 58 44."
+    },
+    "13 42 56 (12)": {
+      "swatcher": "Serpentine13",
+      "shade": "I'll Be Right Back",
+      "note": "Owner-identified 2026-08-22. Topper over a coloured base: the lavender/blue is the polish UNDERNEATH showing through the clear base, not this shade. Identify by particles only."
+    },
+    "13 42 56 (13)": {
+      "swatcher": "Serpentine13",
+      "shade": "I'll Be Right Back",
+      "note": "Owner-identified 2026-08-22. See (12)."
+    },
+    "13 42 56 (14)": {
+      "swatcher": "Serpentine13",
+      "shade": "I'll Be Right Back",
+      "note": "Owner-identified 2026-08-22. See (12)."
+    },
+    "13 42 56 (15)": {
+      "swatcher": "Serpentine13",
+      "shade": "I'll Be Right Back",
+      "note": "Owner-identified 2026-08-22. Model called these Strange Happenings at 0.62 — lowest confidence in the shoot. Topper over a coloured base; see (12)."
+    },
+    "13 42 56 (16)": {
+      "swatcher": "Serpentine13",
+      "shade": "I'll Be Right Back",
+      "note": "Owner-identified 2026-08-22. See (15)."
+    },
+    "13 42 56 (5)": {
+      "swatcher": "Serpentine13",
+      "shade": "Strange Happenings",
+      "note": "Owner-identified 2026-08-22. Frame text said \"neon green hex glitter dominant\" while filed as What Lurks Within, whose glitter is pink — caught by the description veto."
+    },
+    "13 42 56 (8)": {
+      "swatcher": "Serpentine13",
+      "shade": "What Lurks Within",
+      "note": "Owner-identified 2026-08-22. Frame text said \"matte neon pink hex glitter, blue iridescent flakes\" — a verbatim reading of What Lurks Within while filed as a topper. Caught by the description veto."
+    },
+    "13 42 56 (25)": {
+      "swatcher": "Serpentine13",
+      "shade": "Fear What You Will Become",
+      "note": "Owner-identified 2026-08-22."
+    },
+    "13 42 56 (26)": {
+      "swatcher": "Serpentine13",
+      "shade": "Fear What You Will Become",
+      "note": "Owner-identified 2026-08-22. Confirmed against the competing Keep Doubting read from the previous run."
+    },
+    "13 42 56 (27)": {
+      "swatcher": "Serpentine13",
+      "shade": "Fear What You Will Become",
+      "note": "Owner-identified 2026-08-22. See (26)."
+    },
+    "13 42 56 (17)": {
+      "swatcher": "Serpentine13",
+      "shade": "Keep Doubting",
+      "note": "Owner-identified 2026-08-25. Frozen truth had these as What Could Possibly Go Wrong; the model read mulberry base + single blue shimmer, no green travel, consistently across runs and was correct."
+    },
+    "13 42 56 (18)": {
+      "swatcher": "Serpentine13",
+      "shade": "Keep Doubting",
+      "note": "Owner-identified 2026-08-25. Frozen truth had these as What Could Possibly Go Wrong; the model read mulberry base + single blue shimmer, no green travel, consistently across runs and was correct."
+    },
+    "13 42 56 (19)": {
+      "swatcher": "Serpentine13",
+      "shade": "Keep Doubting",
+      "note": "Owner-identified 2026-08-25. Frozen truth had these as What Could Possibly Go Wrong; the model read mulberry base + single blue shimmer, no green travel, consistently across runs and was correct."
+    },
+    "13 42 56 (30)": {
+      "swatcher": "Serpentine13",
+      "shade": "It's All For You",
+      "note": "Owner-identified 2026-08-25. Frozen truth had What Could Possibly Go Wrong; the model read teal-green base with violet-purple shimmer and was correct."
+    }
+  },
+  "_readingNotes": [
+    "Frames that read BLUE were \"deep mulberry base, packed with BLUE shimmer\" (Keep Doubting) — not a blue-based shade.",
+    "Frames that read TEAL-GREEN were \"deep indigo base, packed with GREEN TO BLUE shimmer\" (What Could Possibly Go Wrong?) — not a teal-based shade.",
+    "Frames that read MULBERRY/PINK were \"murky teal base, packed with MAGENTA TO ORANGE shimmer\" (Fear What You Will Become) — not a mulberry-based shade.",
+    "Three for three, the obvious reading was wrong in the same direction: the frame was named after its shimmer.",
+    "Two frames of a clear blue-flake shade worn over a purple polish were called a purple thermal, because the purple underneath was read as the shade."
+  ]
+}
