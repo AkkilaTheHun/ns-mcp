@@ -28,11 +28,15 @@
  */
 import "dotenv/config";
 import { getSupabase } from "../src/supabase/client.js";
+import { extractAndEmbed } from "../src/util/feature-extract.js";
 
 type ColorEntry = { hex?: string; label?: string };
 type Bucket = "base" | "shimmer" | "flake" | "glitter" | "shift" | "thermalCold" | "thermalWarm" | "ignore" | "unknown";
 
 const APPLY = process.argv.includes("--apply");
+// Reprocess rows this script previously reconstructed. Never touches rows whose
+// discriminators came from a real analyze_images run.
+const FORCE = process.argv.includes("--force");
 const LIMIT = (() => {
   const i = process.argv.indexOf("--limit");
   return i >= 0 ? Number(process.argv[i + 1]) : undefined;
@@ -97,9 +101,11 @@ async function main() {
     let q = supabase
       .from("image_signatures")
       .select("id, shade_id, source_path, dominant_colors")
-      .is("discriminators", null)
       .order("id", { ascending: true })
       .range(from, to);
+    q = FORCE
+      ? q.or("discriminators.is.null,discriminators->>_reconstructedFrom.eq.dominant_colors_labels")
+      : q.is("discriminators", null);
     if (SHADE) q = q.eq("shade_id", SHADE);
 
     const { data, error } = await q;
@@ -119,7 +125,13 @@ async function main() {
   let wouldWrite = 0;
   let noUsableColors = 0;
   const samples: string[] = [];
-  const updates: Array<{ id: number; discriminators: Record<string, unknown> }> = [];
+  const updates: Array<{
+    id: number;
+    discriminators: Record<string, unknown>;
+    base_color_hex: string | null;
+    base_color_lab: [number, number, number] | null;
+    embedding: number[];
+  }> = [];
 
   for (const row of rows) {
     const entries: ColorEntry[] = Array.isArray(row.dominant_colors)
@@ -144,8 +156,12 @@ async function main() {
     if (!usable) { noUsableColors++; continue; }
 
     // First entry is conventionally the base when nothing was labelled as one.
+    // On a thermal there is often no "base" at all — both colours are states —
+    // so fall back to the cold state, which is the canonical resting colour and
+    // what dominantColors[0] already resolved to in practice.
     const baseEntry = buckets.base[0]
-      ?? (buckets.unknown[0] && entries.length ? buckets.unknown[0] : undefined);
+      ?? (buckets.unknown[0] && entries.length ? buckets.unknown[0] : undefined)
+      ?? buckets.thermalCold[0];
 
     const discriminators = {
       baseColor: baseEntry ?? null,
@@ -161,7 +177,23 @@ async function main() {
       _reconstructedFrom: "dominant_colors_labels",
     };
 
-    updates.push({ id: row.id, discriminators });
+    // Re-derive the per-row features too. The aggregate averages stored
+    // base_color_lab and embedding values computed at index time, so writing
+    // discriminators alone changes nothing downstream — the row would keep the
+    // base colour and particle dims produced by the old scrape.
+    const features = extractAndEmbed({
+      dominantColors: entries as never,
+      observedEffects: [],
+      discriminators: discriminators as never,
+    });
+
+    updates.push({
+      id: row.id,
+      discriminators,
+      base_color_hex: features.baseColorHex ?? null,
+      base_color_lab: features.baseColorLab,
+      embedding: features.embedding,
+    });
     wouldWrite++;
 
     if (samples.length < 5) {
@@ -182,7 +214,7 @@ async function main() {
   }
 
   const totalClassified = Object.values(tally).reduce((a, b) => a + b, 0);
-  console.log(`\n${APPLY ? "APPLY" : "DRY RUN"} — ${rows.length} rows without discriminators\n`);
+  console.log(`\n${APPLY ? "APPLY" : "DRY RUN"} — ${rows.length} rows${FORCE ? " (incl. previously reconstructed)" : " without discriminators"}\n`);
   console.log(`Colour entries classified: ${totalClassified}`);
   for (const [k, v] of Object.entries(tally)) {
     const pct = totalClassified ? ((v / totalClassified) * 100).toFixed(1) : "0.0";
@@ -203,7 +235,12 @@ async function main() {
     for (const u of chunk) {
       const { error: upErr } = await supabase
         .from("image_signatures")
-        .update({ discriminators: u.discriminators })
+        .update({
+          discriminators: u.discriminators,
+          base_color_hex: u.base_color_hex,
+          base_color_lab: u.base_color_lab,
+          embedding: u.embedding,
+        })
         .eq("id", u.id);
       if (upErr) {
         console.error(`  row ${u.id} failed: ${upErr.message}`);

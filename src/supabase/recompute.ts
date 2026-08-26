@@ -99,7 +99,7 @@ export async function recomputeShadeAggregate(
 
   const { data: images, error } = await supabase
     .from("image_signatures")
-    .select("base_color_lab, embedding, observed_effects, dominant_colors, image_type, confidence")
+    .select("base_color_lab, embedding, observed_effects, dominant_colors, discriminators, component_finish, image_type, confidence")
     .eq("shade_id", shadeId);
   if (error) throw new Error(`Failed to load image signatures: ${error.message}`);
   if (!images || !images.length) return;
@@ -167,11 +167,17 @@ export async function recomputeShadeAggregate(
   type Img = {
     observed_effects?: string[] | null;
     dominant_colors?: unknown;
+    // Without these the aggregate re-derives everything by scraping
+    // dominant_colors, discarding the structured measurement stored per image.
+    discriminators?: unknown;
+    component_finish?: unknown;
     image_type?: string | null;
     confidence?: number | null;
   };
   const perImage = (images as Img[]).map((img) => ({
     flake: extractAndEmbed({
+      discriminators: img.discriminators as never,
+      componentFinish: img.component_finish as never,
       observedEffects: img.observed_effects ?? [],
       dominantColors: (img.dominant_colors as ImageAnalysisLike["dominantColors"]) ?? [],
     }).flake,
