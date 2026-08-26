@@ -84,6 +84,47 @@ function classify(label: string): Bucket {
   return "unknown";
 }
 
+/**
+ * Recover a flake size from label prose.
+ *
+ * The backfill can reconstruct flake COLOURS from labels but had no source for
+ * componentFinish, so flakeSize fell through to the legacy scrape, which reads
+ * observedEffects only. Size words live in the labels — "micro flakes", "large
+ * iridescent shards" — so a shade whose every frame said "black flakies" ended
+ * up with flake_size null. Read them here instead.
+ */
+function sizeFromLabels(labels: string[]): "fine" | "medium" | "large" | null {
+  // Only labels that actually name a flake may vote. Scanning all labels joined
+  // together matched "medium purple-magenta jelly base" and sized a micro-flake
+  // polish as medium: "medium" is overwhelmingly a colour descriptor here.
+  const flakeLabels = labels.map((l) => l.toLowerCase()).filter((l) => /\bflak(e|ie)/.test(l));
+  if (!flakeLabels.length) return null;
+
+  const votes: Array<"fine" | "medium" | "large"> = [];
+  for (const l of flakeLabels) {
+    if (/\b(large|big|chunky|shard)/.test(l)) votes.push("large");
+    else if (/\b(medium|mid-?size|moderate)/.test(l)) votes.push("medium");
+    else if (/\b(micro|fine|tiny|small|dust|speck)/.test(l)) votes.push("fine");
+  }
+
+  if (!votes.length) {
+    // Flakes named with no size qualifier anywhere. "flakie" is the trade term
+    // for the micro variety; a bare "flake" is more often fine than not.
+    return "fine";
+  }
+
+  const tally = votes.reduce<Record<string, number>>((m, v) => ({ ...m, [v]: (m[v] ?? 0) + 1 }), {});
+  const top = Math.max(...Object.values(tally));
+  const winners = Object.entries(tally).filter(([, n]) => n === top).map(([k]) => k);
+  if (winners.length === 1) return winners[0] as "fine" | "medium" | "large";
+
+  // Tied. "flakie" present means the shade is described with the micro term, so
+  // prefer fine; otherwise take the larger reading, since under-calling a flake
+  // loses more information than over-calling one.
+  if (flakeLabels.some((l) => /flakie/.test(l))) return "fine";
+  return (winners.includes("large") ? "large" : "medium") as "medium" | "large";
+}
+
 function isHex(h?: string): h is string {
   return !!h && /^#[0-9a-f]{6}$/i.test(h.trim());
 }
@@ -128,6 +169,7 @@ async function main() {
   const updates: Array<{
     id: number;
     discriminators: Record<string, unknown>;
+    component_finish: Record<string, unknown> | null;
     base_color_hex: string | null;
     base_color_lab: [number, number, number] | null;
     embedding: number[];
@@ -177,6 +219,12 @@ async function main() {
       _reconstructedFrom: "dominant_colors_labels",
     };
 
+    const allLabels = entries.map((e) => e.label ?? "");
+    const reconstructedSize = sizeFromLabels(allLabels);
+    const componentFinish = reconstructedSize
+      ? { glitterFinish: null, flakeFinish: null, flakeSize: reconstructedSize, _reconstructedFrom: "dominant_colors_labels" }
+      : null;
+
     // Re-derive the per-row features too. The aggregate averages stored
     // base_color_lab and embedding values computed at index time, so writing
     // discriminators alone changes nothing downstream — the row would keep the
@@ -185,11 +233,13 @@ async function main() {
       dominantColors: entries as never,
       observedEffects: [],
       discriminators: discriminators as never,
+      componentFinish: componentFinish as never,
     });
 
     updates.push({
       id: row.id,
       discriminators,
+      component_finish: componentFinish,
       base_color_hex: features.baseColorHex ?? null,
       base_color_lab: features.baseColorLab,
       embedding: features.embedding,
@@ -237,6 +287,7 @@ async function main() {
         .from("image_signatures")
         .update({
           discriminators: u.discriminators,
+          component_finish: u.component_finish,
           base_color_hex: u.base_color_hex,
           base_color_lab: u.base_color_lab,
           embedding: u.embedding,
