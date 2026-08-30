@@ -52,6 +52,12 @@ export interface AnalyzeOptions {
   /** Total attempts including the first. */
   attempts?: number;
   onRetry?: (attempt: number, reason: string) => void;
+  /**
+   * Cancellation from the caller. Forwarded to the provider so an aborted tool
+   * call stops paying for vision responses, and checked between retries so a
+   * cancellation during backoff does not trigger another attempt.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -82,10 +88,14 @@ export async function analyzeWithRetry(
 
   let last: ImageAnalysis | undefined;
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    opts.signal?.throwIfAborted();
     let result: ImageAnalysis;
     try {
-      result = await fn(imageBase64, mimeType, context, opts.model, opts.crop);
+      result = await fn(imageBase64, mimeType, context, opts.model, opts.crop, opts.signal);
     } catch (err) {
+      // A cancellation is not a retryable transport error — retrying it would
+      // spend exactly what the cancellation was meant to save.
+      if (opts.signal?.aborted) throw err;
       // Transport/API errors are retryable too; rethrow only when out of tries.
       if (attempt === attempts) throw err;
       opts.onRetry?.(attempt, String(err));

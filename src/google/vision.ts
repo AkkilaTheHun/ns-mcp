@@ -27,6 +27,7 @@ export async function analyzeImage(
   context: PromptContext,
   model: string = "gemini-2.5-flash",
   crop?: { base64: string; mimeType: string },
+  signal?: AbortSignal,
 ): Promise<ImageAnalysis> {
   const ai = getClient();
 
@@ -36,9 +37,12 @@ export async function analyzeImage(
   if (crop) parts.push({ inlineData: { mimeType: crop.mimeType, data: crop.base64 } });
   parts.push({ text: `${SYSTEM_PROMPT}\n\n${buildUserPrompt(context, !!crop)}` });
 
+  // The Google SDK takes an abort signal under `config`, unlike the Anthropic
+  // SDK which takes it as a request option — hence the two shapes.
   const result = await ai.models.generateContent({
     model,
     contents: [{ role: "user", parts }],
+    ...(signal ? { config: { abortSignal: signal } } : {}),
   });
 
   return parseModelJson(result.text ?? "", context);

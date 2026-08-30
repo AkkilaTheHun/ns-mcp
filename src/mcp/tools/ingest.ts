@@ -6,6 +6,7 @@ import { listSharedFolderImages, listSharedSubfolders, getSharedLinkMetadata, do
 import { isDropboxSource, toDropboxPath } from "../../dropbox/source.js";
 import type { ImageAnalysis } from "../../google/vision.js";
 import { analyzeWithRetry, type VisionProvider } from "../../vision/analyze.js";
+import { cacheGet, cacheSet, cacheKey, paramsFingerprint } from "../../vision/analysis-cache.js";
 import type { PromptContext } from "../../vision/schema.js";
 import { buildPixelIndex, snapAnalysis, type SnapReport } from "../../vision/snap.js";
 import { parseColor, rgbToLab, deltaE76 } from "../../util/color.js";
@@ -212,8 +213,20 @@ async function processImage(
   preview: boolean = false,
   cropTargetColor?: string,
   snapColors: boolean = true,
-): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; preview?: PreviewBuffers; error?: { fileId: string; filename: string; error: string } }> {
+  cache?: { key: string },
+  signal?: AbortSignal,
+): Promise<{ result?: Omit<AnalyzedImage, "proposedFilename">; preview?: PreviewBuffers; error?: { fileId: string; filename: string; error: string }; cached?: boolean }> {
   try {
+    // Served before the download, so a hit skips fetching and compressing too —
+    // which is most of the wall time on a large folder, not just the API call.
+    if (cache) {
+      const hit = cacheGet<Omit<AnalyzedImage, "proposedFilename">>(cache.key);
+      if (hit) {
+        console.log(`[analyze] CACHED ${file.name} — no download, no vision call`);
+        return { result: hit, cached: true };
+      }
+    }
+    signal?.throwIfAborted();
     // Resolve the image buffer: URL cache → Dropbox download → Drive download
     let raw: Buffer;
     if (urlBufferCache.has(file.id)) {
@@ -297,6 +310,7 @@ async function processImage(
         model,
         crop: cropBuffer ? { base64: cropBuffer.toString("base64"), mimeType: "image/jpeg" } : undefined,
         attempts: 2,
+        signal,
         onRetry: (attempt, reason) =>
           console.warn(`[analyze] RETRY ${file.name} (attempt ${attempt}): ${reason}`),
       },
@@ -323,17 +337,22 @@ async function processImage(
       }
     }
 
-    return {
-      result: {
-        fileId: file.id,
-        filename: file.name,
-        parentFolderId: file.parentId,
-        originalSizeBytes: file.size,
-        analysis,
-        snapReport,
-      },
+    const result = {
+      fileId: file.id,
+      filename: file.name,
+      parentFolderId: file.parentId,
+      originalSizeBytes: file.size,
+      analysis,
+      snapReport,
     };
+    // Written per image rather than at the end of the run, so work completed
+    // before a cancellation survives it.
+    if (cache) cacheSet(cache.key, result);
+    return { result };
   } catch (err) {
+    // A cancellation is not a per-image failure and must not be reported as
+    // one — it would show up as 29 "errors" in the response.
+    if (signal?.aborted) throw err;
     console.error(`[analyze] FAILED ${file.name}: ${err}`);
     return {
       error: { fileId: file.id, filename: file.name, error: String(err) },
@@ -370,6 +389,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       vendorHint: z.string().optional().describe("Vendor's color/effect description to improve analysis accuracy"),
       recursive: z.boolean().optional().default(false).describe("Traverse subfolders (true for collection folders)"),
       maxImages: z.number().optional().default(50).describe("Max images to analyze (default 50)"),
+      offset: z.number().optional().default(0).describe("Skip this many images from the sorted listing before applying maxImages. Use with totalImagesFound to resume a partially-analyzed folder."),
       provider: z.enum(["gemini", "claude"]).optional().default("claude").describe("Vision provider. Defaults to 'claude' (Sonnet 4.6). Gemini's confidence is miscalibrated — it returns 1.0 on wrong answers and its run-to-run base-colour spread is ~2.5x Claude's on the same image — so it poisons the shade catalog. Use 'gemini' only for deliberate A/B comparison."),
       model: z.string().optional().describe("Override the default model for the chosen provider. Examples: 'gemini-2.5-pro', 'claude-opus-4-7'. Defaults: gemini='gemini-2.5-flash', claude='claude-sonnet-4-6'."),
       fullWidth: z.number().optional().default(1568).describe("Width in px to resize the full image to before sending (default 1568). 1568 is the standard-tier long-edge cap Claude downscales to, so anything smaller discards fidelity for free; Claude 4.7+ run a high-resolution tier at 2576. Measured: 900->1400 cut run-to-run base-colour spread from 5.1 to 3.0 deltaE."),
@@ -384,7 +404,33 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       cropTargetColor: z.string().optional().describe("Target color for the closeup crop. Accepts hex (e.g. '#a8c5e8') or a known name (pastel blue, pastel mint, pastel teal, pink, purple, lavender, periwinkle, grey, etc). When set, the crop is centered on the weighted centroid of pixels matching this color in LAB space — useful for swatcher folders where the catalog color is known and you want to avoid attention landing on bottle caps or skin. Falls back to attention crop if the color match is too weak."),
       structured: z.boolean().optional().default(true).describe("Return the FULL structured analysis (default true): separate bottleColors/nailColors, the discriminators block (baseColor, shiftColors, shimmerFlashColors, magneticLineColor, glitterColors, flakeColors, thermalCold/Warm), componentFinish, and split imageQuality/identification scores. The hex values are the most useful output and are required by shade_index add_image. Set false only for token-light label-only output to an LLM consumer."),
     },
-    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, provider, model, fullWidth, closeup, collectionMode, polishType, polishFinishes, expectedFeatures, snapColors, preview, previewFormat, cropTargetColor, structured }) => {
+    async ({ folderId, urls, productName, brand, vendorHint, recursive, maxImages, offset, provider, model, fullWidth, closeup, collectionMode, polishType, polishFinishes, expectedFeatures, snapColors, preview, previewFormat, cropTargetColor, structured }, extra) => {
+      /**
+       * Progress notifications are what keep the client from cancelling.
+       *
+       * MCP clients reset their inactivity timer on every notifications/progress.
+       * Without them this tool sent nothing for 60s and was cancelled mid-run,
+       * after which the server kept spending vision calls for a client that had
+       * already disconnected and then discarded a complete 121KB result.
+       *
+       * Only sent when the client supplied a token — inventing one is not
+       * meaningful to a client that never asked to be notified.
+       */
+      const progressToken = extra?._meta?.progressToken;
+      let progressSent = 0;
+      const notify = async (progress: number, total: number, message: string) => {
+        if (progressToken === undefined) return;
+        try {
+          await extra.sendNotification({
+            method: "notifications/progress",
+            params: { progressToken, progress, total, message },
+          });
+          progressSent++;
+        } catch {
+          // A client that has gone away is not a reason to abandon the run;
+          // cancellation is signalled through extra.signal, not through this.
+        }
+      };
       dropboxDownloader = undefined; // Reset per invocation
 
       if (!folderId && (!urls || urls.length === 0)) {
@@ -401,7 +447,11 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       }
 
       // Collect all images (with subfolder path)
-      interface TaggedFile extends DriveFile { subfolder: string | null }
+      interface TaggedFile extends DriveFile {
+        subfolder: string | null;
+        /** Dropbox content hash when available — the cache identity for this image. */
+        contentHash?: string;
+      }
       const allFiles: TaggedFile[] = [];
       let folderName = "(urls)";
 
@@ -453,6 +503,7 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
               size: img.size,
               parentId: "(dropbox)",
               subfolder,
+              contentHash: img.contentHash,
             });
           }
         };
@@ -560,15 +611,62 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       const startTime = Date.now();
 
       const cap = maxImages ?? 50;
-      const filesToProcess = allFiles.slice(0, cap);
-      const skippedAfterCap = Math.max(0, allFiles.length - cap);
+      const start = Math.max(0, offset ?? 0);
+      const filesToProcess = allFiles.slice(start, start + cap);
+      const skippedAfterCap = Math.max(0, allFiles.length - (start + cap));
       const context: PromptContext = { productName, brand, vendorHint, collectionMode, polishType, polishFinishes, expectedFeatures };
 
-      const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
-      const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
-        console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
-        return processImage(file, context, provider, model, fullWidth, closeup, preview, cropTargetColor, snapColors);
+      // Sent before the first image: listing and download can take a while on a
+      // large folder, and the client's timer needs resetting during that too.
+      await notify(0, filesToProcess.length, `listing resolved — ${filesToProcess.length} image(s) to analyze`);
+
+      // Fingerprint once: it is identical for every image in this call, and
+      // depends only on the parameters that change what vision returns.
+      const fingerprint = paramsFingerprint({
+        provider, model, fullWidth, closeup, snapColors, structured, collectionMode,
+        cropTargetColor, polishType, polishFinishes, vendorHint, expectedFeatures,
+        productName, brand,
       });
+
+      const concurrency = Number(process.env.IMAGE_CONCURRENCY ?? "8");
+      let done = 0;
+      let cancelled = false;
+
+      const processed = await mapConcurrent(filesToProcess, concurrency, async (file, i) => {
+        // Checked before dispatching rather than only inside the provider, so a
+        // cancellation stops the queue within about one in-flight image instead
+        // of running the whole remaining folder.
+        if (extra?.signal?.aborted) {
+          cancelled = true;
+          return { error: { fileId: file.id, filename: file.name, error: "cancelled" } };
+        }
+
+        console.log(`[analyze] Processing ${i + 1}/${filesToProcess.length}: ${file.subfolder ? file.subfolder + "/" : ""}${file.name}`);
+
+        // Content hash identifies the BYTES without downloading them. Drive and
+        // URL sources have no such hash, so they fall back to the file id.
+        const identity = file.contentHash ?? file.id;
+        const key = cacheKey(identity, fingerprint);
+
+        const out = await processImage(
+          file, context, provider, model, fullWidth, closeup, preview,
+          cropTargetColor, snapColors,
+          preview ? undefined : { key },
+          extra?.signal,
+        ).catch((err) => {
+          if (extra?.signal?.aborted) { cancelled = true; return { error: { fileId: file.id, filename: file.name, error: "cancelled" } }; }
+          throw err;
+        });
+
+        done++;
+        await notify(done, filesToProcess.length, `${done}/${filesToProcess.length} ${file.name}${(out as any).cached ? " (cached)" : ""}`);
+        return out;
+      });
+
+      if (cancelled) {
+        const completed = processed.filter((p) => p.result).length;
+        console.log(`[analyze] CANCELLED after ${completed}/${filesToProcess.length} — completed work retained in cache`);
+      }
 
       // Preview mode: return prepared image buffers as renderable blocks instead of vision analyses
       if (preview) {
@@ -651,7 +749,11 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
       }
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      console.log(`[analyze] Complete: ${results.length} analyzed, ${errors.length} errors, ${elapsed}s elapsed`);
+      const fromCache = processed.filter((p) => (p as any).cached).length;
+      console.log(
+        `[analyze] Complete: ${results.length} analyzed (${fromCache} from cache), ${errors.length} errors, ` +
+        `${elapsed}s elapsed, ${progressSent} progress notification(s)${cancelled ? " — CANCELLED" : ""}`,
+      );
 
       const summary = {
         folderId,
@@ -662,6 +764,11 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
         brand,
         totalImagesFound: allFiles.length,
         totalAnalyzed: results.length,
+        // Lets a caller resume without a wasted probe call: when
+        // offset + totalAnalyzed >= totalImagesFound the folder is finished.
+        offset: start,
+        servedFromCache: fromCache,
+        ...(cancelled ? { cancelled: true, note: "Cancelled mid-run. Completed images are cached — re-running this same call will reuse them and pay only for the remainder." } : {}),
         processingTimeSeconds: Number(elapsed),
         images: results.map((r) => ({
           // Source identifier (one of these will be set)
@@ -703,7 +810,9 @@ confidence score, original filename, subfolder path (Drive) or source URL.`,
               }
             : { confidence: r.analysis.confidence }),
         })),
-        ...(skippedAfterCap > 0 ? { skippedAfterCap } : {}),
+        // Remaining AFTER this slice, so with offset set it answers "is there
+        // more?" rather than "how many did the cap drop?".
+        ...(skippedAfterCap > 0 ? { skippedAfterCap, resumeWithOffset: start + results.length } : {}),
         ...(lowConfidence.length > 0 ? { lowConfidence } : {}),
         ...(errors.length > 0 ? { errors } : {}),
       };

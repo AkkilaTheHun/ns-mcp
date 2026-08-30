@@ -49,6 +49,7 @@ export async function analyzeImage(
   context: PromptContext,
   model: string = "claude-sonnet-4-6",
   crop?: { base64: string; mimeType: string },
+  signal?: AbortSignal,
 ): Promise<ImageAnalysis> {
   const client = getClient();
 
@@ -66,12 +67,18 @@ export async function analyzeImage(
   }
   content.push({ type: "text", text: buildUserPrompt(context, !!crop) });
 
-  const response = await client.messages.create({
-    model,
-    max_tokens: 2048,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content }],
-  });
+  // The signal is passed as a REQUEST OPTION, not a body field. Without it a
+  // cancelled tool call keeps buying vision responses nobody will read — on a
+  // measured run, roughly half a folder was billed after the client had gone.
+  const response = await client.messages.create(
+    {
+      model,
+      max_tokens: 2048,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content }],
+    },
+    signal ? { signal } : undefined,
+  );
 
   const textBlock = response.content.find((b): b is Anthropic.TextBlock => b.type === "text");
   return parseModelJson(textBlock?.text ?? "", context);

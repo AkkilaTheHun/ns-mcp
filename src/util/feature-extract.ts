@@ -574,10 +574,21 @@ function resolveFlakeAttrs(analysis: ImageAnalysisLike): FlakeAttrs {
     hasHolographic,
     hasUltrachrome,
     flakeSize,
-    // Particle palette, not strictly flakes. Falls back to the legacy scrape
-    // only when the structured block carried nothing at all, so a polish is
-    // never left with an empty particle signature.
-    flakeColorsHex: particleHex.length ? particleHex : scraped.flakeColorsHex,
+    // Particle palette, from the LABELLED measurement block only.
+    //
+    // The legacy fallback scraped dominantColors[1..3] positionally, on the
+    // assumption that entry 0 is the base and the rest are flakes. That is
+    // wrong precisely where it matters most: on a shade with NO flakes there
+    // is nothing to scrape but the base and the shimmer, so a creme ended up
+    // with its own base colour recorded as a flake colour, and a glitter
+    // polish had its glitter filed as flakes.
+    //
+    // Empty is the honest answer for a shade with no particles, and it is also
+    // the safe one — downstream matching treats these as measurements, so an
+    // invented flake colour is worse than an absent one. The structured block
+    // has been populated by analyze_images since the vision rework; rows
+    // indexed before it can be corrected by re-running recompute_shade.
+    flakeColorsHex: particleHex,
   };
 }
 

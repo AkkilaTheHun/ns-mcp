@@ -67,12 +67,28 @@ async function upsertShadeRow(params: {
   const supabase = getSupabase();
   const { data: existing } = await supabase
     .from("shade_signatures")
-    .select("id")
+    .select("id, shopify_product_id, shopify_handle")
     .eq("brand", params.brand)
     .eq("shade_name", params.shadeName)
     .maybeSingle();
 
-  if (existing?.id) return { id: existing.id, created: false };
+  if (existing?.id) {
+    // The Shopify link is accepted on every add_image but was only ever written
+    // on the INSERT, so a shade first indexed before its product existed stayed
+    // unlinked forever — every later call passed the id and silently dropped it.
+    //
+    // Only fills blanks: an existing link is left alone, so a stale argument in
+    // one call cannot repoint a shade at the wrong product.
+    const patch: Record<string, string> = {};
+    if (params.shopifyProductId && !existing.shopify_product_id) patch.shopify_product_id = params.shopifyProductId;
+    if (params.shopifyHandle && !existing.shopify_handle) patch.shopify_handle = params.shopifyHandle;
+    if (Object.keys(patch).length) {
+      const { error } = await supabase.from("shade_signatures").update(patch).eq("id", existing.id);
+      if (error) console.warn(`[shade_index] could not link shade ${existing.id} to Shopify: ${error.message}`);
+      else console.log(`[shade_index] linked shade ${existing.id} -> ${Object.keys(patch).join(", ")}`);
+    }
+    return { id: existing.id, created: false };
+  }
 
   const { data, error } = await supabase
     .from("shade_signatures")

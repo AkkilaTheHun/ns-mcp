@@ -132,6 +132,15 @@ export interface DropboxFile {
   name: string;
   path: string;
   size: number;
+  /**
+   * Dropbox's content hash — a digest of the file's BYTES.
+   *
+   * Available from folder metadata, so it identifies an image without
+   * downloading it. That makes it the right cache key: a file that is renamed
+   * or moved keeps its hash, and a file edited in place changes it, which
+   * neither a path nor a modified-time gets right.
+   */
+  contentHash?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +229,7 @@ export async function listSharedFolderImages(
       name: e.name,
       path: e.path_display,
       size: e.size ?? 0,
+      contentHash: e.content_hash,
     }));
 }
 
@@ -494,7 +504,7 @@ export async function listOwnFolderImages(path: string): Promise<DropboxFile[]> 
       const ext = e.name.toLowerCase().split(".").pop() ?? "";
       return ["jpg", "jpeg", "png", "webp", "heic", "heif", "tiff", "gif", "avif"].includes(ext);
     })
-    .map((e) => ({ id: e.id, name: e.name, path: e.path_display, size: e.size ?? 0 }));
+    .map((e) => ({ id: e.id, name: e.name, path: e.path_display, size: e.size ?? 0, contentHash: e.content_hash }));
 }
 
 /**
