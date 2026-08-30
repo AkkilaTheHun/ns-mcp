@@ -104,13 +104,25 @@ export function registerAssignShadesGateway(server: McpServer) {
         return { content: [{ type: "text", text: "ANTHROPIC_API_KEY is not configured on the server." }], isError: true };
       }
 
+      // Progress goes to stdout so `docker logs -f` shows the run advancing.
+      // Without it this tool is silent for minutes while it downloads frames
+      // and calls the vision API, which is indistinguishable from being hung.
+      const t0 = Date.now();
+      const log = (m: string) => console.log(`[assign_shades] ${m}`);
+      log(`start: ${source} against ${shades.length} candidate shade(s)`);
+
       const listed = await listImages(source);
       if (!listed.length) {
         return { content: [{ type: "text", text: `No images found in ${source}` }], isError: true };
       }
 
+      log(`${listed.length} image(s) found; downloading`);
       const frames = [];
-      for (const f of listed) frames.push({ id: f.id, bytes: await prep(await f.fetch()) });
+      for (const f of listed) {
+        frames.push({ id: f.id, bytes: await prep(await f.fetch()) });
+        if (frames.length % 10 === 0) log(`downloaded ${frames.length}/${listed.length}`);
+      }
+      log(`downloaded ${frames.length}/${listed.length}`);
 
       // Optional visual index, built from verified exemplars only.
       let indexSheet: Buffer | null = null;
@@ -139,6 +151,9 @@ export function registerAssignShadesGateway(server: McpServer) {
           const built = await buildIndexSheet({ shades: shades.map((s) => s.name), exemplars });
           indexSheet = built.sheet;
           legend = built.legend;
+          log(`index sheet built from ${exemplars.length} verified exemplar(s)`);
+        } else {
+          log(`exemplarFolder given but no exemplars found — running on descriptions alone`);
         }
       }
 
@@ -152,11 +167,13 @@ export function registerAssignShadesGateway(server: McpServer) {
         corrections,
         model,
         batchSize,
+        onProgress: (m) => log(m),
       });
 
       const tally = new Map<string, number>();
       for (const a of result.assignments) if (a.shade) tally.set(a.shade, (tally.get(a.shade) ?? 0) + 1);
       const flagged = result.assignments.filter((a) => a.flags.length);
+      log(`done in ${Math.round((Date.now() - t0) / 1000)}s — ${result.assignments.length} frames, ${result.diagnostics.shadesFound} shades, ${flagged.length} flagged`);
 
       const lines = [
         `${result.assignments.length} frames -> ${result.diagnostics.shadesFound} shades${indexSheet ? " (visual index used)" : " (descriptions only)"}`,
